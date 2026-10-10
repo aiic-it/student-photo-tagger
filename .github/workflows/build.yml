@@ -23,7 +23,21 @@ jobs:
         run: pip install -r requirements.txt pyinstaller
 
       - name: Test (including a simulated Smart Shooter)
-        run: python -m unittest discover -s tests -t . -v
+        shell: bash
+        run: |
+          set +e
+          python -m unittest discover -s tests -t . -v > test-output.txt 2>&1
+          code=$?
+          cat test-output.txt
+          if [ $code -ne 0 ]; then
+            python - <<'PY'
+          text = open("test-output.txt", encoding="utf-8", errors="replace").read()
+          for block in text.split("=" * 70)[1:]:
+              msg = block.strip()[:3000].replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+              print("::error title=Test failure::" + msg)
+          PY
+          fi
+          exit $code
         env:
           REQUIRE_INTEGRATION: "1"
 
