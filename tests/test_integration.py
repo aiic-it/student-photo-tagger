@@ -105,5 +105,93 @@ class WithSimulatedSmartShooter(unittest.TestCase):
                   what="tag after Smart Shooter restart")
 
 
+@unittest.skipUnless(CAN_RUN, "needs a display")
+class ConvertExistingPhotosWindow(unittest.TestCase):
+    """Drives the real 'Convert existing photos' window: preview, then export."""
+
+    def setUp(self):
+        import app.gui as gui
+        self.gui = gui
+        self.tmp = tempfile.mkdtemp()
+        os.environ["APPDATA"] = os.path.join(self.tmp, "appdata")
+        os.makedirs(os.path.join(os.environ["APPDATA"], "StudentPhotoTagger"))
+        self.list_path = os.path.join(self.tmp, "students.csv")
+        with open(self.list_path, "w", encoding="utf-8") as f:
+            f.write("Student Number,First Name,Last Name\n10234,Nimal,Perera\n10235,Amaya,Silva\n10236,Kasun,Fernando\n")
+        with open(os.path.join(os.environ["APPDATA"], "StudentPhotoTagger", "settings.json"), "w") as f:
+            json.dump({"last_list": self.list_path, "req_port": REQ_PORT, "pub_port": PUB_PORT}, f)
+        self.src = os.path.join(self.tmp, "old photos")
+        os.makedirs(self.src)
+        for name in ("10234.jpg", "010235.JPG", "99999.jpg", "IMG_1.jpg"):
+            with open(os.path.join(self.src, name), "wb") as f:
+                f.write(b"x")
+        self.dialogs = []
+        self._orig = {n: getattr(gui.messagebox, n) for n in ("showinfo", "showerror", "showwarning", "askyesno")}
+        for n in self._orig:
+            setattr(gui.messagebox, n, lambda *a, _n=n, **k: self.dialogs.append((_n, a[1] if len(a) > 1 else "")) or False)
+        self.app = gui.App()
+
+    def tearDown(self):
+        for n, f in self._orig.items():
+            setattr(self.gui.messagebox, n, f)
+        self.app._on_close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_opens_without_a_list(self):
+        self.app.students = []
+        self.app.index = self.gui.StudentIndex([])
+        for mode in ("convert", "shoot"):
+            dlg = self.gui.ExportDialog(self.app, mode=mode)
+            self.app.update()
+            self.assertTrue(dlg.winfo_exists())
+            self.assertIn("No student list", dlg.list_label.cget("text"))
+            self.assertFalse(dlg.preview())
+            self.assertEqual(self.dialogs[-1][0], "showerror")
+            dlg.destroy()
+
+    def test_buttons_open_the_window(self):
+        before = set(self.app.winfo_children())
+        for b in self._find_buttons(self.app, "Convert existing photos"):
+            b.invoke()
+        self.app.update()
+        new = [w for w in self.app.winfo_children() if w not in before and isinstance(w, self.gui.ExportDialog)]
+        self.assertEqual(len(new), 1)
+        self.assertEqual(new[0].title(), "Convert existing photos")
+        new[0].destroy()
+
+    def _find_buttons(self, w, text):
+        out = []
+        for c in w.winfo_children():
+            try:
+                if c.cget("text") == text:
+                    out.append(c)
+            except Exception:
+                pass
+            out += self._find_buttons(c, text)
+        return out
+
+    def test_preview_and_export(self):
+        self.assertEqual(len(self.app.students), 3)
+        dlg = self.gui.ExportDialog(self.app, mode="convert")
+        self.app.update()
+        dlg.src.set(self.src)
+        dest = os.path.join(self.tmp, "exported")
+        dlg.dest.set(dest)
+        self.assertTrue(dlg.preview(), self.dialogs)
+        statuses = sorted(dlg.table.item(i, "values")[3] for i in dlg.table.get_children())
+        self.assertEqual(statuses, ["Matched", "Matched", "No student number", "Not on list"])
+        dlg.export()
+        end = time.time() + 15
+        while dlg.export_result is None and time.time() < end:
+            self.app.update()
+            time.sleep(0.05)
+        self.assertIsNotNone(dlg.export_result, f"export never finished; dialogs: {self.dialogs}")
+        self.assertEqual(dlg.export_result[1], [])
+        for rel in ("By ID/10234.jpg", "By ID/10235.jpg", "By Name/Nimal Perera.jpg", "By Name/Amaya Silva.jpg",
+                    "export_report.csv", "students_without_photo.csv"):
+            self.assertTrue(os.path.isfile(os.path.join(dest, rel)), rel)
+        dlg.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -78,6 +78,17 @@ class App(tk.Tk):
         self.after(200, self._pump)
         self.after(1000, self._heartbeat)
 
+    def report_callback_exception(self, exc, val, tb) -> None:
+        import traceback
+        detail = "".join(traceback.format_exception(exc, val, tb))
+        try:
+            with open(os.path.join(os.path.dirname(settings_path()), "error_log.txt"), "a", encoding="utf-8") as f:
+                f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + detail + "\n")
+        except OSError:
+            pass
+        messagebox.showerror(APP_NAME, f"Something went wrong:\n\n{val}\n\nDetails were saved to "
+                                       f"%APPDATA%\\StudentPhotoTagger\\error_log.txt")
+
     # =================================================================== settings
     def _load_settings(self) -> dict:
         try:
@@ -543,10 +554,6 @@ class ExportDialog(tk.Toplevel):
         super().__init__(app)
         self.app = app
         self.mode = mode
-        if not app.students:
-            self.destroy()
-            messagebox.showinfo(APP_NAME, "Load a student list first.")
-            return
         self.title("Export photos" if mode == "shoot" else "Convert existing photos")
         self.geometry("900x620")
         self.transient(app)
@@ -559,7 +566,13 @@ class ExportDialog(tk.Toplevel):
 
         intro = ("Copies today's photos into clean names." if mode == "shoot"
                  else "Finds photos named by student number and copies them into name format.")
-        ttk.Label(frm, text=intro).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+
+        list_row = ttk.Frame(frm)
+        list_row.grid(row=0, column=0, columnspan=3, sticky="we", pady=(0, 8))
+        self.list_label = ttk.Label(list_row)
+        self.list_label.pack(side="left")
+        ttk.Button(list_row, text="Load student list…", command=self._load_list).pack(side="right")
+        self._show_list_name()
 
         src_default = app.download_path if mode == "shoot" else s.get("convert_source", "")
         self.src = tk.StringVar(value=src_default)
@@ -593,7 +606,7 @@ class ExportDialog(tk.Toplevel):
         ttk.Button(btns, text="Preview", command=self.preview).pack(side="left")
         self.export_btn = ttk.Button(btns, text="Export", command=self.export)
         self.export_btn.pack(side="left", padx=6)
-        self.summary = ttk.Label(btns, text="Click Preview to check what will be copied.")
+        self.summary = ttk.Label(btns, text=intro + " Click Preview to check first.")
         self.summary.pack(side="left", padx=8)
 
         cols = ("file", "student", "new", "status")
@@ -614,6 +627,8 @@ class ExportDialog(tk.Toplevel):
 
         for var in (self.src, self.recursive, self.by_name, self.by_id, self.which, self.fmt):
             var.trace_add("write", lambda *_: self._invalidate())
+        self.lift()
+        self.focus_set()
 
     def _path_row(self, frm, row, label, var) -> None:
         ttk.Label(frm, text=label).grid(row=row, column=0, sticky="w", pady=2)
@@ -628,11 +643,30 @@ class ExportDialog(tk.Toplevel):
     def _invalidate(self) -> None:
         self.plan = None
 
+    def _show_list_name(self) -> None:
+        path = self.app.settings.get("last_list", "")
+        if self.app.students:
+            self.list_label.configure(text=f"Student list: {os.path.basename(path)} ({len(self.app.students)} students)",
+                                      foreground="")
+        else:
+            self.list_label.configure(text="No student list loaded — load one first", foreground="#8A1F1F")
+
+    def _load_list(self) -> None:
+        path = filedialog.askopenfilename(parent=self, title="Choose the student list",
+                                          filetypes=[("Student lists", "*.csv *.xlsx *.txt"), ("All files", "*.*")])
+        if path:
+            self.app.load_list(path)
+            self._show_list_name()
+            self._invalidate()
+
     def _options(self) -> ExportOptions:
         return ExportOptions(by_name=self.by_name.get(), by_id=self.by_id.get(),
                              which=self.which.get(), name_format=self.fmt.get())
 
     def preview(self) -> bool:
+        if not self.app.students:
+            messagebox.showerror(APP_NAME, "Load a student list first (button at the top of this window).", parent=self)
+            return False
         src = self.src.get().strip()
         if not src or not os.path.isdir(src):
             messagebox.showerror(APP_NAME, "Choose the folder that has the photos.", parent=self)
@@ -687,21 +721,42 @@ class ExportDialog(tk.Toplevel):
         self.export_btn.state(["disabled"])
         plan = self.plan
 
+        # Copy on a background thread; it reports back through a queue that the window polls,
+        # because Tk must only be touched from the main thread.
+        self._results: "queue.Queue[tuple]" = queue.Queue()
+        self.export_result = None
+
         def work():
-            errors = run_export(plan, dest, progress=lambda n, t: self.after(0, self._progress, n, t))
-            self.after(0, self._done, dest, errors)
+            try:
+                errors = run_export(plan, dest, progress=lambda n, t: self._results.put(("progress", n, t)))
+            except Exception as e:  # never leave the window stuck
+                errors = [f"Export stopped: {e}"]
+            self._results.put(("done", dest, errors))
 
         threading.Thread(target=work, daemon=True).start()
+        self.after(100, self._poll, plan)
 
-    def _progress(self, n, total) -> None:
-        self.bar.configure(maximum=total, value=n)
+    def _poll(self, plan) -> None:
+        while True:
+            try:
+                kind, a, b = self._results.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "progress":
+                self.bar.configure(maximum=b, value=a)
+            else:
+                self._done(plan, a, b)
+                return
+        self.after(100, self._poll, plan)
 
-    def _done(self, dest, errors) -> None:
+    def _done(self, plan, dest, errors) -> None:
         self.export_btn.state(["!disabled"])
-        msg = f"Exported {len(self.plan.copies) - len(errors)} files to:\n{dest}\n\nA report (export_report.csv) is in the same folder."
+        copied = len(plan.copies) - len(errors)
+        self.export_result = (copied, errors)
+        msg = f"Exported {copied} files to:\n{dest}\n\nA report (export_report.csv) is in the same folder."
         if errors:
             msg += f"\n\n{len(errors)} files couldn't be copied — see the report."
-        self.app.log(f"Exported {len(self.plan.copies) - len(errors)} files")
+        self.app.log(f"Exported {copied} files")
         if messagebox.askyesno(APP_NAME, msg + "\n\nOpen the folder now?", parent=self):
             open_folder(dest)
 
