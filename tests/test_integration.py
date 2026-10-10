@@ -174,7 +174,7 @@ class ConvertExistingPhotosWindow(unittest.TestCase):
         self.assertEqual(len(self.app.students), 3)
         dlg = self.gui.ExportDialog(self.app, mode="convert")
         self.app.update()
-        dlg.src.set(self.src)
+        dlg.set_sources([self.src])
         dest = os.path.join(self.tmp, "exported")
         dlg.dest.set(dest)
         self.assertTrue(dlg.preview(), self.dialogs)
@@ -190,6 +190,35 @@ class ConvertExistingPhotosWindow(unittest.TestCase):
         for rel in ("By ID/10234.jpg", "By ID/10235.jpg", "By Name/Nimal Perera.jpg", "By Name/Amaya Silva.jpg",
                     "export_report.csv", "students_without_photo.csv"):
             self.assertTrue(os.path.isfile(os.path.join(dest, rel)), rel)
+        dlg.destroy()
+
+    def test_two_folders_into_class_folders(self):
+        with open(self.list_path, "w", encoding="utf-8") as f:
+            f.write("Student Number,First Name,Last Name,Class\n10234,Nimal,Perera,7B\n"
+                    "10235,Amaya,Silva,7C\n10236,Kasun,Fernando,7C\n")
+        self.app.load_list(self.list_path)
+        second = os.path.join(self.tmp, "more photos")
+        os.makedirs(second)
+        with open(os.path.join(second, "10236.jpg"), "wb") as f:
+            f.write(b"x")
+        dlg = self.gui.ExportDialog(self.app, mode="convert")
+        self.app.update()
+        dlg.set_sources([self.src, second, self.src])  # duplicate ignored
+        self.assertEqual(dlg.folder_list.size(), 2)
+        dlg.by_class.set(True)
+        dest = os.path.join(self.tmp, "by class")
+        dlg.dest.set(dest)
+        self.assertTrue(dlg.preview(), self.dialogs)
+        dlg.export()
+        end = time.time() + 15
+        while dlg.export_result is None and time.time() < end:
+            self.app.update()
+            time.sleep(0.05)
+        self.assertEqual(dlg.export_result[1], [])
+        for rel in ("By Name/7B/Nimal Perera.jpg", "By Name/7C/Amaya Silva.jpg", "By Name/7C/Kasun Fernando.jpg",
+                    "By ID/7C/10236.jpg"):
+            self.assertTrue(os.path.isfile(os.path.join(dest, rel)), rel)
+        self.assertEqual(self.app.settings["convert_sources"], [os.path.normpath(self.src), os.path.normpath(second)])
         dlg.destroy()
 
 

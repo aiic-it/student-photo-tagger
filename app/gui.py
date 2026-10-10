@@ -14,7 +14,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from . import __version__
 from .core import (ExportOptions, ListError, Student, StudentIndex, existing_conflicts,
-                   load_students, make_tag, plan_export, run_export, scan_folder,
+                   load_students, make_tag, plan_export, run_export, scan_folder, scan_folders,
                    write_student_list)
 from .ss_client import SmartShooterClient
 
@@ -574,10 +574,19 @@ class ExportDialog(tk.Toplevel):
         ttk.Button(list_row, text="Load student list…", command=self._load_list).pack(side="right")
         self._show_list_name()
 
-        src_default = app.download_path if mode == "shoot" else s.get("convert_source", "")
-        self.src = tk.StringVar(value=src_default)
+        if mode == "shoot":
+            sources = [app.download_path] if app.download_path else []
+        else:
+            sources = s.get("convert_sources") or ([s["convert_source"]] if s.get("convert_source") else [])
+        ttk.Label(frm, text="Photo folders").grid(row=1, column=0, sticky="nw", pady=2)
+        self.folder_list = tk.Listbox(frm, height=4, activestyle="none", exportselection=False)
+        self.folder_list.grid(row=1, column=1, sticky="we", padx=6, pady=2)
+        fbtns = ttk.Frame(frm)
+        fbtns.grid(row=1, column=2, sticky="n", pady=2)
+        ttk.Button(fbtns, text="Add folder…", command=self._add_folder).pack(fill="x")
+        ttk.Button(fbtns, text="Remove", command=self._remove_folder).pack(fill="x", pady=(4, 0))
+        self.set_sources(sources)
         self.dest = tk.StringVar(value=s.get("export_dest", ""))
-        self._path_row(frm, 1, "Photos folder", self.src)
         self._path_row(frm, 2, "Export to", self.dest)
         self.recursive = tk.BooleanVar(value=s.get("recursive", False))
         ttk.Checkbutton(frm, text="Include subfolders", variable=self.recursive).grid(row=3, column=1, sticky="w")
@@ -588,10 +597,12 @@ class ExportDialog(tk.Toplevel):
         self.by_id = tk.BooleanVar(value=s.get("by_id", True))
         self.which = tk.StringVar(value=s.get("which", "newest"))
         self.fmt = tk.StringVar(value=s.get("name_format", "first_last"))
+        self.by_class = tk.BooleanVar(value=s.get("by_class", False))
         g1 = ttk.LabelFrame(opts, text="Make copies", padding=8)
         g1.pack(side="left", fill="y")
         ttk.Checkbutton(g1, text="By Name", variable=self.by_name).pack(anchor="w")
         ttk.Checkbutton(g1, text="By ID", variable=self.by_id).pack(anchor="w")
+        ttk.Checkbutton(g1, text="In class folders", variable=self.by_class).pack(anchor="w", pady=(4, 0))
         g2 = ttk.LabelFrame(opts, text="Photos per student", padding=8)
         g2.pack(side="left", fill="y", padx=8)
         for val, label in (("newest", "One (newest)"), ("first", "One (first taken)"), ("all", "All photos")):
@@ -625,7 +636,7 @@ class ExportDialog(tk.Toplevel):
         self.bar = ttk.Progressbar(frm, mode="determinate")
         self.bar.grid(row=7, column=0, columnspan=3, sticky="we", pady=(8, 0))
 
-        for var in (self.src, self.recursive, self.by_name, self.by_id, self.which, self.fmt):
+        for var in (self.recursive, self.by_name, self.by_id, self.by_class, self.which, self.fmt):
             var.trace_add("write", lambda *_: self._invalidate())
         self.lift()
         self.focus_set()
@@ -642,6 +653,33 @@ class ExportDialog(tk.Toplevel):
 
     def _invalidate(self) -> None:
         self.plan = None
+
+    def set_sources(self, folders) -> None:
+        self.sources: list[str] = []
+        self.folder_list.delete(0, "end")
+        for f in folders:
+            self._append_source(f)
+        self._invalidate()
+
+    def _append_source(self, folder: str) -> None:
+        folder = os.path.normpath(folder)
+        if any(os.path.normcase(folder) == os.path.normcase(f) for f in self.sources):
+            return
+        self.sources.append(folder)
+        self.folder_list.insert("end", folder)
+
+    def _add_folder(self) -> None:
+        start = self.sources[-1] if self.sources else None
+        path = filedialog.askdirectory(parent=self, initialdir=start, title="Add a folder of photos")
+        if path:
+            self._append_source(path)
+            self._invalidate()
+
+    def _remove_folder(self) -> None:
+        for i in reversed(self.folder_list.curselection()):
+            self.folder_list.delete(i)
+            del self.sources[i]
+        self._invalidate()
 
     def _show_list_name(self) -> None:
         path = self.app.settings.get("last_list", "")
@@ -660,23 +698,26 @@ class ExportDialog(tk.Toplevel):
             self._invalidate()
 
     def _export_options(self) -> ExportOptions:
-        return ExportOptions(by_name=self.by_name.get(), by_id=self.by_id.get(),
-                             which=self.which.get(), name_format=self.fmt.get())
+        return ExportOptions(by_name=self.by_name.get(), by_id=self.by_id.get(), which=self.which.get(),
+                             name_format=self.fmt.get(), by_class=self.by_class.get())
 
     def preview(self) -> bool:
         if not self.app.students:
             messagebox.showerror(APP_NAME, "Load a student list first (button at the top of this window).", parent=self)
             return False
-        src = self.src.get().strip()
-        if not src or not os.path.isdir(src):
-            messagebox.showerror(APP_NAME, "Choose the folder that has the photos.", parent=self)
+        if not self.sources:
+            messagebox.showerror(APP_NAME, "Add at least one folder of photos.", parent=self)
+            return False
+        missing = [f for f in self.sources if not os.path.isdir(f)]
+        if missing:
+            messagebox.showerror(APP_NAME, "These folders can't be found:\n\n" + "\n".join(missing), parent=self)
             return False
         opts = self._export_options()
         if not (opts.by_name or opts.by_id):
             messagebox.showerror(APP_NAME, "Tick By Name, By ID, or both.", parent=self)
             return False
         try:
-            photos = scan_folder(src, self.app.index, self.recursive.get())
+            photos = scan_folders(self.sources, self.app.index, self.recursive.get())
         except OSError as e:
             messagebox.showerror(APP_NAME, f"Couldn't read the folder.\n\n{e}", parent=self)
             return False
@@ -686,7 +727,7 @@ class ExportDialog(tk.Toplevel):
             new_names.setdefault(c.src, []).append(c.dest.replace("\\", "/"))
         self.table.delete(*self.table.get_children())
         for p in photos:
-            name = os.path.relpath(p.path, src)
+            name = self._short_name(p.path)
             if p.student is None:
                 self.table.insert("", "end", values=(name, "—", "—", p.status), tags=("warn",))
             elif p.path in new_names:
@@ -699,6 +740,18 @@ class ExportDialog(tk.Toplevel):
                                     f"{len(self.plan.students_without_photo)} students without a photo")
         return True
 
+    def _short_name(self, path: str) -> str:
+        best = None
+        for f in self.sources:
+            try:
+                rel = os.path.relpath(path, f)
+            except ValueError:  # different drive
+                continue
+            if not rel.startswith(".."):
+                best = rel if len(self.sources) == 1 else os.path.join(os.path.basename(f) or f, rel)
+                break
+        return best or path
+
     def export(self) -> None:
         if self.plan is None and not self.preview():
             return
@@ -706,8 +759,8 @@ class ExportDialog(tk.Toplevel):
         if not dest:
             messagebox.showerror(APP_NAME, "Choose where to export to.", parent=self)
             return
-        if os.path.abspath(dest) == os.path.abspath(self.src.get().strip()):
-            messagebox.showerror(APP_NAME, "Export to a different folder from the photos folder.", parent=self)
+        if any(os.path.normcase(os.path.abspath(dest)) == os.path.normcase(os.path.abspath(f)) for f in self.sources):
+            messagebox.showerror(APP_NAME, "Export to a different folder from the photo folders.", parent=self)
             return
         if not self.plan.copies:
             messagebox.showinfo(APP_NAME, "Nothing to export.", parent=self)
@@ -763,9 +816,10 @@ class ExportDialog(tk.Toplevel):
     def _remember(self, dest) -> None:
         s = self.app.settings
         s.update({"export_dest": dest, "recursive": self.recursive.get(), "by_name": self.by_name.get(),
-                  "by_id": self.by_id.get(), "which": self.which.get(), "name_format": self.fmt.get()})
+                  "by_id": self.by_id.get(), "by_class": self.by_class.get(), "which": self.which.get(),
+                  "name_format": self.fmt.get()})
         if self.mode == "convert":
-            s["convert_source"] = self.src.get().strip()
+            s["convert_sources"] = list(self.sources)
         self.app.save_settings()
 
 

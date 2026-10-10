@@ -7,7 +7,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core import (ExportOptions, ListError, StudentIndex, leading_token, load_students,  # noqa: E402
-                      make_tag, plan_export, run_export, scan_folder)
+                      make_tag, plan_export, run_export, scan_folder, scan_folders)
 
 
 def write(path, text, enc="utf-8"):
@@ -153,6 +153,47 @@ class Export(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(out, "export_report.csv")))
         with open(os.path.join(out, "students_without_photo.csv"), encoding="utf-8-sig") as f:
             self.assertIn("10236", f.read())
+
+
+class ClassesAndFolders(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        p = os.path.join(self.d, "s.csv")
+        write(p, "Student Number,First Name,Last Name,Class\n10234,Nimal,Perera,7B\n10235,Amaya,Silva,7/C\n"
+                 "10236,Kasun,Fernando,\n")
+        students, _ = load_students(p)
+        self.index = StudentIndex(students)
+        t = time.time() - 1000
+        self.a = os.path.join(self.d, "2024 photos")
+        self.b = os.path.join(self.d, "2025 photos")
+        touch(os.path.join(self.a, "10234.jpg"), t)
+        touch(os.path.join(self.b, "10234.jpg"), t + 50)
+        touch(os.path.join(self.b, "10235.jpg"), t)
+        touch(os.path.join(self.a, "10236.jpg"), t)
+
+    def dests(self, plan):
+        return sorted(c.dest.replace("\\", "/") for c in plan.copies)
+
+    def test_class_folders(self):
+        photos = scan_folders([self.a, self.b], self.index)
+        plan = plan_export(photos, self.index, ExportOptions(by_class=True))
+        self.assertEqual(self.dests(plan), [
+            "By ID/7B/10234.jpg", "By ID/7C/10235.jpg", "By ID/No class/10236.jpg",
+            "By Name/7B/Nimal Perera.jpg", "By Name/7C/Amaya Silva.jpg", "By Name/No class/Kasun Fernando.jpg",
+        ])
+
+    def test_same_name_in_two_folders_are_two_photos(self):
+        photos = scan_folders([self.a, self.b], self.index)
+        self.assertEqual(len(photos), 4)
+        newest = plan_export(photos, self.index, ExportOptions(by_name=False))
+        src = [c.src for c in newest.copies if c.student.number == "10234"]
+        self.assertEqual(src, [os.path.join(self.b, "10234.jpg")])
+        every = plan_export(photos, self.index, ExportOptions(by_name=False, which="all"))
+        self.assertIn("By ID/10234_2.jpg", self.dests(every))
+
+    def test_overlapping_folders_counted_once(self):
+        photos = scan_folders([self.d, self.a], self.index, recursive=True)
+        self.assertEqual(len(photos), 4)
 
 
 if __name__ == "__main__":

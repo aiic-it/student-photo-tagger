@@ -49,12 +49,15 @@ A photo saved with no student selected is shown in red in **Activity** and the c
 any folder of photos named by student number (`10234.jpg`, `10234_2.jpg`, `10234 (1).jpg`,
 `010234.jpg` all match student 10234).
 
-1. Check **Photos folder** and choose **Export to** (a different, empty folder is best).
-2. Pick **By Name**, **By ID** or both; **one photo per student** (newest or first) or **all**;
-   and the name format (`Nimal Perera.jpg` or `Perera, Nimal.jpg`).
+1. Under **Photo folders**, click **Add folder…** for each folder of photos (add as many as you like;
+   tick **Include subfolders** to look inside them too). Choose **Export to** (a different, empty folder is best).
+2. Pick **By Name**, **By ID** or both; tick **In class folders** to sort copies by the list's class column;
+   **one photo per student** (newest or first) or **all**; and the name format (`Nimal Perera.jpg` or `Perera, Nimal.jpg`).
 3. Click **Preview** to see every file and its new name, then **Export**.
 
-You get `By ID\10234.jpg` and `By Name\Nimal Perera.jpg`. Students with the same name get their number
+You get `By ID\10234.jpg` and `By Name\Nimal Perera.jpg` (or `By Name\7B\Nimal Perera.jpg` with class folders;
+students with no class go in `No class`). The same student found in several folders counts as several photos,
+so **One (newest)** picks the most recent across all folders. Students with the same name get their number
 added, e.g. `Nimal Perera (10234).jpg`. RAW + JPG pairs stay together. Originals are never changed.
 
 The export folder also gets `export_report.csv` (every copy plus unmatched files) and

@@ -248,6 +248,19 @@ def scan_folder(folder: str, index: StudentIndex, recursive: bool = False) -> li
     return out
 
 
+def scan_folders(folders: list[str], index: StudentIndex, recursive: bool = False) -> list[PhotoFile]:
+    """Scan several folders; a file reached twice (e.g. a folder inside another) is listed once."""
+    seen: set[str] = set()
+    out: list[PhotoFile] = []
+    for folder in folders:
+        for p in scan_folder(folder, index, recursive):
+            key = os.path.normcase(os.path.abspath(p.path))
+            if key not in seen:
+                seen.add(key)
+                out.append(p)
+    return out
+
+
 # --------------------------------------------------------------------------- export planning
 
 @dataclass
@@ -256,6 +269,14 @@ class ExportOptions:
     by_id: bool = True
     which: str = "newest"          # "all", "newest", "first"
     name_format: str = "first_last"  # "first_last" or "last_first"
+    by_class: bool = False           # put copies in a sub-folder per class
+
+
+NO_CLASS_FOLDER = "No class"
+
+
+def class_folder(s: Student) -> str:
+    return safe_part(s.group) or NO_CLASS_FOLDER
 
 
 @dataclass
@@ -299,10 +320,11 @@ def plan_export(photos: list[PhotoFile], index: StudentIndex, opts: ExportOption
             plan.students_without_photo.append(s)
             continue
         # Group files that are the same shot in different formats (IMG_1.CR3 + IMG_1.JPG).
-        shots: dict[str, list[PhotoFile]] = {}
+        # Files in different folders are always different shots, even with the same name.
+        shots: dict[tuple[str, str], list[PhotoFile]] = {}
         for p in files:
             stem = os.path.splitext(os.path.basename(p.path))[0].lower()
-            shots.setdefault(stem, []).append(p)
+            shots.setdefault((os.path.normcase(os.path.dirname(os.path.abspath(p.path))), stem), []).append(p)
         ordered = sorted(shots.values(),
                          key=lambda g: (max(p.mtime for p in g), os.path.basename(g[0].path).lower()))
         if opts.which == "newest":
@@ -311,10 +333,11 @@ def plan_export(photos: list[PhotoFile], index: StudentIndex, opts: ExportOption
             ordered = ordered[:1]
 
         targets = []
+        sub = [class_folder(s)] if opts.by_class else []
         if opts.by_id:
-            targets.append(("By ID", safe_part(s.number)))
+            targets.append((os.path.join("By ID", *sub), safe_part(s.number)))
         if opts.by_name:
-            targets.append(("By Name", name_base(s, opts, index)))
+            targets.append((os.path.join("By Name", *sub), name_base(s, opts, index)))
         for i, group in enumerate(ordered, start=1):
             suffix = "" if i == 1 else f"_{i}"
             for p in sorted(group, key=lambda p: p.path.lower()):
@@ -349,14 +372,14 @@ def write_report(plan: ExportPlan, dest_root: str, errors: list[str]) -> None:
     os.makedirs(dest_root, exist_ok=True)
     with open(os.path.join(dest_root, "export_report.csv"), "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["Status", "Student number", "First name", "Last name", "Original file", "Exported as"])
+        w.writerow(["Status", "Student number", "First name", "Last name", "Class", "Original file", "Exported as"])
         for c in plan.copies:
-            w.writerow(["Exported", c.student.number, c.student.first, c.student.last,
-                        os.path.basename(c.src), c.dest])
+            w.writerow(["Exported", c.student.number, c.student.first, c.student.last, c.student.group,
+                        c.src, c.dest])
         for p in plan.unmatched:
-            w.writerow([p.status, "", "", "", os.path.basename(p.path), ""])
+            w.writerow([p.status, "", "", "", "", p.path, ""])
         for e in errors:
-            w.writerow(["Error", "", "", "", e, ""])
+            w.writerow(["Error", "", "", "", "", e, ""])
     write_student_list(plan.students_without_photo, os.path.join(dest_root, "students_without_photo.csv"))
 
 
