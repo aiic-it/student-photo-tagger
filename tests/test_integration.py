@@ -17,8 +17,10 @@ try:
     import tkinter
     tkinter.Tk().destroy()
     CAN_RUN = True
-except Exception:  # no zmq, no tkinter, or no display
+except Exception as e:  # no zmq, no tkinter, or no display
     CAN_RUN = False
+    if os.environ.get("REQUIRE_INTEGRATION"):
+        raise RuntimeError(f"Integration tests must run on the build machine: {e}")
 
 REQ_PORT, PUB_PORT = 55544, 55543
 

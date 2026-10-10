@@ -24,6 +24,8 @@ jobs:
 
       - name: Test (including a simulated Smart Shooter)
         run: python -m unittest discover -s tests -t . -v
+        env:
+          REQUIRE_INTEGRATION: "1"
 
       - name: Build StudentPhotoTagger.exe
         run: pyinstaller --noconfirm --onefile --windowed --name StudentPhotoTagger run.py
