@@ -659,7 +659,7 @@ class ExportDialog(tk.Toplevel):
             self._show_list_name()
             self._invalidate()
 
-    def _options(self) -> ExportOptions:
+    def _export_options(self) -> ExportOptions:
         return ExportOptions(by_name=self.by_name.get(), by_id=self.by_id.get(),
                              which=self.which.get(), name_format=self.fmt.get())
 
@@ -671,7 +671,7 @@ class ExportDialog(tk.Toplevel):
         if not src or not os.path.isdir(src):
             messagebox.showerror(APP_NAME, "Choose the folder that has the photos.", parent=self)
             return False
-        opts = self._options()
+        opts = self._export_options()
         if not (opts.by_name or opts.by_id):
             messagebox.showerror(APP_NAME, "Tick By Name, By ID, or both.", parent=self)
             return False
