@@ -1,0 +1,43 @@
+name: Build Windows app
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Test (including a simulated Smart Shooter)
+        run: python -m unittest discover -s tests -t . -v
+
+      - name: Build StudentPhotoTagger.exe
+        run: pyinstaller --noconfirm --onefile --windowed --name StudentPhotoTagger run.py
+
+      - name: Upload exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: StudentPhotoTagger
+          path: dist/StudentPhotoTagger.exe
+
+      - name: Publish release (version tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/StudentPhotoTagger.exe
+            sample_students.csv

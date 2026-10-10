@@ -1,0 +1,83 @@
+# Student Photo Tagger
+
+Select a student, take the photo, and Smart Shooter 5 saves it with that student's number and name.
+Afterwards, export clean copies **By Name** and/or **By ID**. It can also convert old photos that are
+named by student number.
+
+## Download
+
+Open the **Actions** tab → newest **Build Windows app** run → **Artifacts** → `StudentPhotoTagger`.
+Unzip it to get `StudentPhotoTagger.exe`. Version releases also appear under **Releases**.
+
+The first time you run it, Windows may say *"Windows protected your PC"*. Click **More info → Run anyway**.
+This happens because the app isn't digitally signed.
+
+## One-time setup (5 minutes)
+
+1. **Turn on Smart Shooter's External API.** In Smart Shooter 5 open **File → Options** and find the
+   **External API** setting. Turn it on and restart Smart Shooter. If you can't find it, your
+   Smart Shooter edition may not include it — check with Kuvacode/Tether Tools.
+2. **Start Smart Shooter**, connect the camera, then start **StudentPhotoTagger.exe**.
+   The top-right corner should say **● Smart Shooter connected**. If Windows Firewall asks, click **Allow**.
+3. In the app, choose **Smart Shooter → Set up file naming** and click **Yes**.
+   Photos will now be saved like `10234_Nimal_Perera_001.jpg`.
+4. Click **Load student list** and pick your CSV or Excel file (a TASS export works). It needs columns for
+   student number, first name and last name; a class/year column is shown if present.
+   See `sample_students.csv` for the layout. The app remembers the list next time.
+
+## Picture day
+
+1. Type a few letters of the name in **Search** and press **Enter** (or click the name).
+2. Wait for the banner to turn **green**: that means Smart Shooter has the student's name.
+3. Take the photos. Each one appears under **Activity** and the student gets a ✓ and a count.
+4. Click **Next student ▶** (or Ctrl+N) to move down the list.
+
+Banner colours:
+
+| Colour | Meaning |
+| --- | --- |
+| Green | Ready — photos will be named after this student |
+| Amber | Waiting for Smart Shooter to confirm |
+| Red | Smart Shooter isn't connected — photos will NOT be named |
+| Grey | No student selected — photos won't be linked to anyone |
+
+A photo saved with no student selected is shown in red in **Activity** and the computer beeps.
+
+## Exporting
+
+**Export photos** copies photos from Smart Shooter's folder. **Convert existing photos** does the same for
+any folder of photos named by student number (`10234.jpg`, `10234_2.jpg`, `10234 (1).jpg`,
+`010234.jpg` all match student 10234).
+
+1. Check **Photos folder** and choose **Export to** (a different, empty folder is best).
+2. Pick **By Name**, **By ID** or both; **one photo per student** (newest or first) or **all**;
+   and the name format (`Nimal Perera.jpg` or `Perera, Nimal.jpg`).
+3. Click **Preview** to see every file and its new name, then **Export**.
+
+You get `By ID\10234.jpg` and `By Name\Nimal Perera.jpg`. Students with the same name get their number
+added, e.g. `Nimal Perera (10234).jpg`. RAW + JPG pairs stay together. Originals are never changed.
+
+The export folder also gets `export_report.csv` (every copy plus unmatched files) and
+`students_without_photo.csv`.
+
+**Reports** in the main window saves the day's photo log and a not-yet-photographed list.
+
+## Troubleshooting
+
+| Problem | Fix |
+| --- | --- |
+| "Smart Shooter not connected" | Start Smart Shooter, check External API is on, then **Smart Shooter → Reconnect**. |
+| Banner stays amber | Same as above; the app keeps retrying on its own. |
+| Photos named without the student | Run **Smart Shooter → Set up file naming**, and turn off *Auto Scan Barcodes* in Smart Shooter so a scanned code can't replace the name. |
+| Smart Shooter is on another computer | **Smart Shooter → Connection address** and enter that computer's IP address. |
+| List won't load | It needs student number, first name and last name columns. Save as CSV and try again. |
+
+## For developers
+
+Python 3.10+ with `pip install -r requirements.txt`, then `python run.py`.
+Tests: `python -m unittest discover -s tests -t .` (the integration test runs the real window against
+`tests/fake_smartshooter.py`, a simulated Smart Shooter you can also run by hand).
+`build.bat` builds the exe locally; GitHub Actions builds it on every push.
+
+Smart Shooter integration uses its [External API](https://github.com/kuvacode/smartshooter-api):
+`SetOptions` with `Barcode` sets the `[Z]` filename field, and `PhotoUpdated` events report saved photos.
