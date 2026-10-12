@@ -38,6 +38,7 @@ class Student:
     first: str
     last: str
     group: str = ""
+    added: bool = field(default=False, compare=False)   # added on the day, not in the loaded list
 
     @property
     def display(self) -> str:
@@ -367,7 +368,10 @@ def name_base(s: Student, opts: ExportOptions, index: StudentIndex) -> str:
     return base
 
 
-def plan_export(photos: list[PhotoFile], index: StudentIndex, opts: ExportOptions) -> ExportPlan:
+def plan_export(photos: list[PhotoFile], index: StudentIndex, opts: ExportOptions,
+                best: dict[str, str] | None = None) -> ExportPlan:
+    """best: student key -> path of the starred photo (used instead of newest/first)."""
+    best_paths = {_norm_path(v) for v in (best or {}).values()}
     plan = ExportPlan()
     per_student: dict[str, list[PhotoFile]] = {}
     for p in photos:
@@ -389,7 +393,12 @@ def plan_export(photos: list[PhotoFile], index: StudentIndex, opts: ExportOption
             shots.setdefault((os.path.normcase(os.path.dirname(os.path.abspath(p.path))), stem), []).append(p)
         ordered = sorted(shots.values(),
                          key=lambda g: (max(p.mtime for p in g), os.path.basename(g[0].path).lower()))
-        if opts.which == "newest":
+        starred = [g for g in ordered if any(_norm_path(p.path) in best_paths for p in g)]
+        if starred:
+            ordered = starred[-1:] + [g for g in ordered if g is not starred[-1]]
+            if opts.which in ("newest", "first"):
+                ordered = ordered[:1]
+        elif opts.which == "newest":
             ordered = ordered[-1:]
         elif opts.which == "first":
             ordered = ordered[:1]
@@ -407,6 +416,58 @@ def plan_export(photos: list[PhotoFile], index: StudentIndex, opts: ExportOption
                 for folder, base in targets:
                     plan.copies.append(PlannedCopy(p.path, os.path.join(folder, base + suffix + ext), s))
     return plan
+
+
+# --------------------------------------------------------------------------- starred (best) photos
+
+BEST_FILE = "best_photos.json"
+
+
+def _norm_path(p: str) -> str:
+    return os.path.normcase(os.path.abspath(p))
+
+
+def load_best(folders: list[str], recursive: bool = False) -> dict[str, str]:
+    """Read best_photos.json from each folder: {student key: full path of the starred photo}."""
+    import json
+    found: dict[str, str] = {}
+    for folder in folders:
+        walker = os.walk(folder) if recursive else [(folder, [], [BEST_FILE])]
+        for root, _dirs, files in walker:
+            if BEST_FILE not in files:
+                continue
+            try:
+                with open(os.path.join(root, BEST_FILE), encoding="utf-8") as f:
+                    data = json.load(f)
+            except (OSError, ValueError):
+                continue
+            for key, name in (data or {}).items():
+                path = os.path.join(root, str(name))
+                if not os.path.isfile(path):
+                    continue
+                old = found.get(normalise_number(key))
+                if old is None or os.path.getmtime(path) > os.path.getmtime(old):
+                    found[normalise_number(key)] = path
+    return found
+
+
+def set_best(photo_path: str, student_key: str, starred: bool = True) -> None:
+    """Star (or un-star) a photo for a student, in best_photos.json beside the photo."""
+    import json
+    folder = os.path.dirname(os.path.abspath(photo_path))
+    file = os.path.join(folder, BEST_FILE)
+    try:
+        with open(file, encoding="utf-8") as f:
+            data = json.load(f) or {}
+    except (OSError, ValueError):
+        data = {}
+    name = os.path.basename(photo_path)
+    if starred:
+        data[student_key] = name
+    elif data.get(student_key) == name:
+        del data[student_key]
+    with open(file, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
 
 
 def existing_conflicts(plan: ExportPlan, dest_root: str) -> int:

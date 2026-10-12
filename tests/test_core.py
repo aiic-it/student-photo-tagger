@@ -7,7 +7,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core import (ExportOptions, ListError, StudentIndex, leading_token, load_students,  # noqa: E402
-                      make_tag, plan_export, run_export, scan_folder, scan_folders)
+                      make_tag, plan_export, run_export, scan_folder, scan_folders,
+                      load_best, set_best)
 
 
 def write(path, text, enc="utf-8"):
@@ -232,6 +233,52 @@ class ClassesAndFolders(unittest.TestCase):
     def test_overlapping_folders_counted_once(self):
         photos = scan_folders([self.d, self.a], self.index, recursive=True)
         self.assertEqual(len(photos), 4)
+
+
+class StarredPhotos(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        p = os.path.join(self.d, "s.csv")
+        write(p, "Student Number,First Name,Last Name\n10234,Nimal,Perera\n10235,Amaya,Silva\n")
+        students, _ = load_students(p)
+        self.index = StudentIndex(students)
+        self.f = os.path.join(self.d, "shoot")
+        t = time.time() - 1000
+        for i, name in enumerate(("10234_Nimal_Perera.jpg", "10234_Nimal_Perera-1.jpg", "10234_Nimal_Perera-2.jpg")):
+            touch(os.path.join(self.f, name), t + i * 10)
+        touch(os.path.join(self.f, "10235.jpg"), t)
+
+    def test_star_overrides_newest_and_first(self):
+        star = os.path.join(self.f, "10234_Nimal_Perera-1.jpg")
+        set_best(star, "10234")
+        best = load_best([self.f])
+        self.assertEqual(best, {"10234": star})
+        photos = scan_folder(self.f, self.index)
+        for which in ("newest", "first"):
+            plan = plan_export(photos, self.index, ExportOptions(by_name=False, which=which), best)
+            src = {c.student.number: os.path.basename(c.src) for c in plan.copies}
+            self.assertEqual(src["10234"], "10234_Nimal_Perera-1.jpg", which)
+            self.assertEqual(src["10235"], "10235.jpg")
+        plan = plan_export(photos, self.index, ExportOptions(by_name=False, which="all"), best)
+        first = [c for c in plan.copies if c.dest.replace("\\", "/") == "By ID/10234.jpg"]
+        self.assertEqual(os.path.basename(first[0].src), "10234_Nimal_Perera-1.jpg")
+        self.assertEqual(len([c for c in plan.copies if c.student.number == "10234"]), 3)
+
+    def test_unstar_and_restar(self):
+        a = os.path.join(self.f, "10234_Nimal_Perera.jpg")
+        b = os.path.join(self.f, "10234_Nimal_Perera-2.jpg")
+        set_best(a, "10234")
+        set_best(b, "10234")              # moving the star replaces it
+        self.assertEqual(load_best([self.f])["10234"], b)
+        set_best(a, "10234", starred=False)   # un-starring a different photo changes nothing
+        self.assertEqual(load_best([self.f])["10234"], b)
+        set_best(b, "10234", starred=False)
+        self.assertEqual(load_best([self.f]), {})
+
+    def test_star_file_is_not_a_photo(self):
+        set_best(os.path.join(self.f, "10235.jpg"), "10235")
+        names = {os.path.basename(p.path) for p in scan_folder(self.f, self.index)}
+        self.assertNotIn("best_photos.json", names)
 
 
 if __name__ == "__main__":

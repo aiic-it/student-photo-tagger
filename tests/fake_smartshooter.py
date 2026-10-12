@@ -83,8 +83,12 @@ class FakeSmartShooter:
         while os.path.exists(os.path.join(self.download_path, name)):  # filename collision check
             name, n = f"{base}-{n}{ext}", n + 1
         path = os.path.join(self.download_path, name)
-        with open(path, "wb") as f:
-            f.write(b"fake photo")
+        try:  # a real small JPEG so previews can be tested
+            from PIL import Image
+            Image.new("RGB", (300, 400), (40 + (self.seq * 50) % 200, 120, 160)).save(path, "JPEG")
+        except Exception:
+            with open(path, "wb") as f:
+                f.write(b"fake photo")
         info = {"PhotoKey": uuid.uuid4().hex, "PhotoName": name, "PhotoFilename": path,
                 "PhotoOriginalName": f"IMG_{1000 + self.seq}{ext.upper()}", "PhotoBarcode": z,
                 "PhotoSequenceNum": self.seq}

@@ -14,9 +14,19 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from . import __version__
 from .core import (ExportOptions, ListError, Student, StudentIndex, existing_conflicts,
-                   load_students, make_tag, plan_export, run_export, scan_folder, scan_folders,
-                   write_student_list)
+                   load_best, load_students, make_tag, plan_export, run_export,
+                   scan_folder, scan_folders, set_best, write_student_list)
 from .ss_client import SmartShooterClient
+from .thumbs import Thumbnailer
+
+try:
+    from PIL import ImageTk
+except ImportError:  # pragma: no cover
+    ImageTk = None
+
+LAST_PREVIEW = 150     # px, photo beside the banner
+STRIP_PREVIEW = 110    # px, photos of the selected student
+STRIP_MAX = 8
 
 APP_NAME = "Student Photo Tagger"
 NO_STUDENT_TAG = "NO-STUDENT"
@@ -62,7 +72,12 @@ class App(tk.Tk):
         self.sent_tag: str | None = None
         self.ss_tag: str | None = None
         self.download_path: str = self.settings.get("download_path", "")
-        self.photos: dict[str, set[str]] = {}       # student key -> photo file names
+        self.photos: dict[str, dict[str, str]] = {}  # student key -> {file name (lower): full path}
+        self.thumbs = Thumbnailer()
+        self._thumb_handlers: dict[str, object] = {}
+        self._tk_images: dict[str, object] = {}
+        self.last_photo: tuple[str, Student | None] | None = None
+        self.best: dict[str, str] = {}
         self.seen_photo_keys: set[str] = set()
         self.photo_log: list[list[str]] = []
         self.was_connected = False
@@ -129,6 +144,7 @@ class App(tk.Tk):
         menu = tk.Menu(reports, tearoff=False)
         menu.add_command(label="Save photo log…", command=self.save_photo_log)
         menu.add_command(label="Save not-yet-photographed list…", command=self.save_missing_list)
+        menu.add_command(label="Save added students list…", command=self.save_added_list)
         reports["menu"] = menu
         reports.pack(side="left", padx=(6, 0))
         setup = ttk.Menubutton(bar, text="Smart Shooter")
@@ -160,13 +176,25 @@ class App(tk.Tk):
         # Banner
         self.banner = tk.Frame(self, bd=0, highlightthickness=1, highlightbackground="#CCCCCC")
         self.banner.pack(fill="x", padx=10, pady=(0, 8))
-        self.banner_small = tk.Label(self.banner, text="Now shooting", font=("Segoe UI", 10), anchor="w")
+        self.last_frame = tk.Frame(self.banner, width=LAST_PREVIEW + 40)
+        self.last_frame.pack(side="right", fill="y", padx=(0, 10), pady=6)
+        self.last_title = tk.Label(self.last_frame, text="Last photo", font=("Segoe UI", 9))
+        self.last_title.pack()
+        self.last_img = tk.Label(self.last_frame, text="No photos yet", width=22, height=6, cursor="hand2",
+                                 relief="flat", bg="#F7F7F7", fg="#777777")
+        self.last_img.pack()
+        self.last_img.bind("<Button-1>", lambda e: self.last_photo and open_folder(self.last_photo[0]))
+        self.last_caption = tk.Label(self.last_frame, text="", font=("Segoe UI", 9), wraplength=LAST_PREVIEW + 40)
+        self.last_caption.pack()
+        self.banner_text = tk.Frame(self.banner)
+        self.banner_text.pack(side="left", fill="both", expand=True)
+        self.banner_small = tk.Label(self.banner_text, text="Now shooting", font=("Segoe UI", 10), anchor="w")
         self.banner_small.pack(fill="x", padx=14, pady=(8, 0))
-        self.banner_big = tk.Label(self.banner, text="No student selected", font=("Segoe UI", 24, "bold"), anchor="w")
+        self.banner_big = tk.Label(self.banner_text, text="No student selected", font=("Segoe UI", 24, "bold"), anchor="w")
         self.banner_big.pack(fill="x", padx=14)
-        self.banner_detail = tk.Label(self.banner, text="Load a student list, then click a name.", font=("Segoe UI", 10), anchor="w")
+        self.banner_detail = tk.Label(self.banner_text, text="Load a student list, then click a name.", font=("Segoe UI", 10), anchor="w")
         self.banner_detail.pack(fill="x", padx=14)
-        btns = tk.Frame(self.banner)
+        btns = tk.Frame(self.banner_text)
         btns.pack(fill="x", padx=14, pady=(6, 10))
         self.banner_btns = btns
         ttk.Button(btns, text="Next student  ▶", command=self.next_student).pack(side="left")
@@ -188,6 +216,7 @@ class App(tk.Tk):
         self.search.pack(side="left", fill="x", expand=True, padx=(6, 0))
         self.search.bind("<Return>", self._search_enter)
         self.search.bind("<Down>", lambda e: self._focus_tree())
+        ttk.Button(search_row, text="+ Add student", command=self.add_student_dialog).pack(side="left", padx=(6, 0))
 
         cols = ("done", "number", "name", "group", "photos")
         self.tree = ttk.Treeview(left, columns=cols, show="headings", selectmode="browse")
@@ -198,6 +227,7 @@ class App(tk.Tk):
             self.tree.column(c, width=w, anchor=anchor, stretch=(c == "name"))
         self.tree.tag_configure("done", foreground="#1E5E2F")
         self.tree.tag_configure("current", background="#DCEBFA")
+        self.tree.tag_configure("added", foreground="#1F4E8C")
         sb = ttk.Scrollbar(left, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -208,6 +238,20 @@ class App(tk.Tk):
         body.add(right, weight=2)
         self.progress_label = ttk.Label(right, text="No student list loaded")
         self.progress_label.pack(anchor="w")
+        self.strip_box = ttk.LabelFrame(right, text="Photos of the selected student", padding=6)
+        self.strip_box.pack(fill="x", pady=(10, 0))
+        self.strip_hint = ttk.Label(self.strip_box, foreground="#666666",
+                                    text="Click a photo to star it as the best one. Export uses the starred photo.")
+        self.strip_hint.pack(anchor="w")
+        self.strip_canvas = tk.Canvas(self.strip_box, height=STRIP_PREVIEW + 34, highlightthickness=0)
+        self.strip_scroll = ttk.Scrollbar(self.strip_box, orient="horizontal", command=self.strip_canvas.xview)
+        self.strip_canvas.configure(xscrollcommand=self.strip_scroll.set)
+        self.strip_canvas.pack(fill="x", pady=(4, 0))
+        self.strip_scroll.pack(fill="x")
+        self.strip = tk.Frame(self.strip_canvas)
+        self.strip_canvas.create_window((0, 0), window=self.strip, anchor="nw")
+        self.strip.bind("<Configure>", lambda e: self.strip_canvas.configure(scrollregion=self.strip_canvas.bbox("all")))
+        self.strip_cells: dict[str, tuple] = {}
         ttk.Label(right, text="Activity", foreground="#666666").pack(anchor="w", pady=(10, 2))
         self.activity = tk.Listbox(right, activestyle="none", highlightthickness=0, borderwidth=1)
         self.activity.pack(fill="both", expand=True)
@@ -218,10 +262,13 @@ class App(tk.Tk):
     def _paint_banner(self, state: str) -> None:
         bg, fg = COLOURS[state]
         self.banner.configure(bg=bg)
-        for w in (self.banner_small, self.banner_big, self.banner_detail, self.banner_btns):
+        for w in (self.banner_small, self.banner_big, self.banner_detail, self.banner_btns,
+                  self.banner_text, self.last_frame, self.last_title, self.last_caption):
             w.configure(bg=bg)
-        for w in (self.banner_small, self.banner_big, self.banner_detail):
+        for w in (self.banner_small, self.banner_big, self.banner_detail, self.last_title):
             w.configure(fg=fg)
+        if not (self.last_photo and self.last_photo[1] is None):
+            self.last_caption.configure(fg=fg)
 
     def log(self, text: str, warn: bool = False) -> None:
         self.activity.insert(0, f"{time.strftime('%H:%M')}  {text}")
@@ -245,9 +292,13 @@ class App(tk.Tk):
             if not quiet:
                 messagebox.showerror(APP_NAME, f"Couldn't read that list.\n\n{e}")
             return
+        students, now_listed = self._merge_added(students)
+        if now_listed and not quiet:
+            self.log(f"{now_listed} student(s) added earlier are now in the list")
         self.students = students
         self.index = StudentIndex(students)
         self.photos = {}
+        self.best = {}
         self.current = None
         self.settings["last_list"] = path
         self.save_settings()
@@ -269,7 +320,11 @@ class App(tk.Tk):
             return
         for f in files:
             if f.student:
-                self.photos.setdefault(f.student.key, set()).add(os.path.basename(f.path).lower())
+                self.photos.setdefault(f.student.key, {})[os.path.basename(f.path).lower()] = f.path
+        try:
+            self.best.update(load_best([self.download_path]))
+        except OSError:
+            pass
 
     def refresh_list(self) -> None:
         q = self.search_var.get().strip().lower()
@@ -286,7 +341,8 @@ class App(tk.Tk):
 
     def _row_values(self, s: Student):
         n = len(self.photos.get(s.key, ()))
-        return ("✓" if n else "", s.number, s.display, s.group, n or "")
+        name = s.display + ("  (added)" if s.added else "")
+        return ("✓" if n else "", s.number, name, s.group, n or "")
 
     def _row_tags(self, s: Student):
         tags = []
@@ -294,6 +350,8 @@ class App(tk.Tk):
             tags.append("done")
         if self.current and s.key == self.current.key:
             tags.append("current")
+        if s.added:
+            tags.append("added")
         return tags
 
     def _refresh_row(self, s: Student) -> None:
@@ -341,7 +399,12 @@ class App(tk.Tk):
         self.client.set_tag(self.sent_tag, tag="SetTag:" + self.sent_tag)
         self._show_current(pending=True)
         self._update_tag_example()
-        self.log(f"Selected {s.display} ({s.number})")
+        self._refresh_strip()
+        if self.photos.get(s.key):
+            n = len(self.photos[s.key])
+            self.log(f"Selected {s.display} ({s.number}) — already has {n} photo{'s' if n != 1 else ''}")
+        else:
+            self.log(f"Selected {s.display} ({s.number})")
 
     def next_student(self) -> None:
         kids = list(self.tree.get_children())
@@ -360,6 +423,7 @@ class App(tk.Tk):
     def clear_student(self) -> None:
         old = self.current
         self.current = None
+        self.after_idle(self._refresh_strip)
         self.tree.selection_remove(*self.tree.selection())
         if old:
             self._refresh_row(old)
@@ -405,6 +469,14 @@ class App(tk.Tk):
                     self._on_event(name, msg)
             except Exception as e:  # keep the app running whatever Smart Shooter sends
                 self.log(f"Problem reading a Smart Shooter message: {e}", warn=True)
+        while True:
+            try:
+                key, img = self.thumbs.results.get_nowait()
+            except queue.Empty:
+                break
+            handler = self._thumb_handlers.pop(key, None)
+            if handler:
+                handler(img)
         self.after(150, self._pump)
 
     def _on_reply(self, tag: str, msg: dict | None) -> None:
@@ -497,15 +569,19 @@ class App(tk.Tk):
         self.photo_log.append([time.strftime("%Y-%m-%d %H:%M:%S"), name, path,
                                s.number if s else "", s.first if s else "", s.last if s else ""])
         if s:
-            self.photos.setdefault(s.key, set()).add(name.lower())
+            full = path or os.path.join(self.download_path, name)
+            self.photos.setdefault(s.key, {})[name.lower()] = full
             if live:
                 self._refresh_row(s)
                 self.log(f"Saved {name}")
                 if self.current and s.key == self.current.key:
                     self._show_current()
+                    self._refresh_strip()
         elif live:
             self.log(f"Saved {name} — NOT linked to a student", warn=True)
             self.bell()
+        if live and (path or self.download_path):
+            self._show_last_photo(path or os.path.join(self.download_path, name), s)
         return True
 
     def _heartbeat(self) -> None:
@@ -622,6 +698,215 @@ class App(tk.Tk):
 
     def _on_close(self) -> None:
         self.client.stop()
+        self.thumbs.stop()
+        self.destroy()
+
+    # =================================================================== previews
+    def _request_thumb(self, key: str, path: str, size: int, handler) -> None:
+        self._thumb_handlers[key] = handler
+        self.thumbs.request(key, path, size)
+
+    def _to_tk(self, key: str, img):
+        if img is None or ImageTk is None:
+            return None
+        photo = ImageTk.PhotoImage(img, master=self)
+        self._tk_images[key] = photo          # keep a reference or Tk drops the picture
+        return photo
+
+    def _show_last_photo(self, path: str, s: Student | None) -> None:
+        self.last_photo = (path, s)
+        name = os.path.basename(path)
+        if s:
+            self.last_caption.configure(text=f"{s.display}\n{name}")
+        else:
+            self.last_caption.configure(text=f"NOT linked to a student\n{name}", fg="#8A1F1F")
+        self.last_img.configure(text="Loading…", image="")
+
+        def done(img, path=path):
+            if not self.last_photo or self.last_photo[0] != path:
+                return
+            photo = self._to_tk("last", img)
+            if photo:
+                self.last_img.configure(image=photo, text="", width=photo.width(), height=photo.height())
+            else:
+                self.last_img.configure(text="No preview\n(click to open folder)", image="", width=22, height=6)
+
+        self._request_thumb("last", path, LAST_PREVIEW, done)
+
+    def student_photo_paths(self, s: Student) -> list[str]:
+        paths = [p for p in self.photos.get(s.key, {}).values() if os.path.isfile(p)]
+        paths.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+        return paths
+
+    def _refresh_strip(self) -> None:
+        for w in self.strip.winfo_children():
+            w.destroy()
+        self.strip_cells = {}
+        s = self.current
+        if not s:
+            self.strip_box.configure(text="Photos of the selected student")
+            return
+        paths = self.student_photo_paths(s)
+        star = self.best.get(s.key)
+        if star and not any(os.path.normcase(p) == os.path.normcase(star) for p in paths[:STRIP_MAX]):
+            if os.path.isfile(star):
+                paths = [star] + paths
+        self.strip_box.configure(text=f"Photos of {s.display} ({len(paths)})")
+        if not paths:
+            ttk.Label(self.strip, text="No photos yet.", foreground="#777777").pack(side="left", pady=10)
+            return
+        for i, path in enumerate(paths[:STRIP_MAX]):
+            cell = tk.Frame(self.strip, padx=4)
+            cell.pack(side="left", anchor="n")
+            pic = tk.Label(cell, text="…", width=14, height=6, bg="#F3F3F3", cursor="hand2", bd=2, relief="flat")
+            pic.pack()
+            cap = tk.Label(cell, font=("Segoe UI", 9))
+            cap.pack()
+            for w in (pic, cap):
+                w.bind("<Button-1>", lambda e, p=path: self.toggle_best(p))
+            self.strip_cells[path] = (pic, cap)
+            self._paint_cell(path)
+            key = f"strip:{i}:{path}"
+
+            def done(img, path=path, key=key):
+                cell = self.strip_cells.get(path)
+                if not cell or not cell[0].winfo_exists():
+                    return
+                photo = self._to_tk(key, img)
+                if photo:
+                    cell[0].configure(image=photo, text="", width=photo.width(), height=photo.height())
+                else:
+                    cell[0].configure(text=os.path.splitext(os.path.basename(path))[1].upper().strip(".") or "?")
+
+            self._request_thumb(key, path, STRIP_PREVIEW, done)
+
+    def _paint_cell(self, path: str) -> None:
+        pic, cap = self.strip_cells[path]
+        starred = self.current and os.path.normcase(self.best.get(self.current.key, "")) == os.path.normcase(path)
+        pic.configure(relief="solid" if starred else "flat", highlightthickness=0,
+                      bd=3 if starred else 2, bg="#E8B400" if starred else "#F3F3F3")
+        cap.configure(text="★ Best" if starred else "☆ Star", fg="#7A4B00" if starred else "#777777")
+
+    def toggle_best(self, path: str) -> None:
+        s = self.current
+        if not s:
+            return
+        already = os.path.normcase(self.best.get(s.key, "")) == os.path.normcase(path)
+        try:
+            if self.best.get(s.key) and not already:
+                set_best(self.best[s.key], s.key, starred=False)
+            set_best(path, s.key, starred=not already)
+        except OSError as e:
+            messagebox.showerror(APP_NAME, f"Couldn't save the star.\n\n{e}")
+            return
+        if already:
+            self.best.pop(s.key, None)
+            self.log(f"Removed the star from {os.path.basename(path)}")
+        else:
+            self.best[s.key] = path
+            self.log(f"Starred {os.path.basename(path)} as the best photo of {s.display}")
+        for p in self.strip_cells:
+            self._paint_cell(p)
+
+    # =================================================================== added students
+    def _merge_added(self, students: list[Student]) -> tuple[list[Student], int]:
+        listed = {s.key for s in students}
+        keep, now_listed = [], 0
+        for d in self.settings.get("added_students", []):
+            st = Student(str(d.get("number", "")), d.get("first", ""), d.get("last", ""), d.get("group", ""), added=True)
+            if not st.number:
+                continue
+            if st.key in listed:
+                now_listed += 1
+                continue
+            keep.append(d)
+            students.append(st)
+            listed.add(st.key)
+        if now_listed:
+            self.settings["added_students"] = keep
+            self.save_settings()
+        return students, now_listed
+
+    def add_student(self, number: str, first: str, last: str, group: str = "") -> Student:
+        st = Student(number.strip(), first.strip(), last.strip(), group.strip(), added=True)
+        self.settings.setdefault("added_students", []).append(
+            {"number": st.number, "first": st.first, "last": st.last, "group": st.group})
+        self.save_settings()
+        self.students.append(st)
+        self.index = StudentIndex(self.students)
+        self.search_var.set("")
+        self.refresh_list()
+        self.log(f"Added {st.display} ({st.number})")
+        self.tree.selection_set(st.key)
+        self.tree.see(st.key)
+        return st
+
+    def add_student_dialog(self) -> None:
+        AddStudentDialog(self)
+
+    def save_added_list(self) -> None:
+        added = [s for s in self.students if s.added]
+        if not added:
+            messagebox.showinfo(APP_NAME, "No students have been added.")
+            return
+        path = filedialog.asksaveasfilename(defaultextension=".csv", initialfile="added_students.csv",
+                                            filetypes=[("CSV", "*.csv")])
+        if path:
+            write_student_list(added, path)
+            self.log(f"Saved {len(added)} added students")
+
+
+class AddStudentDialog(tk.Toplevel):
+    def __init__(self, app: App):
+        super().__init__(app)
+        self.app = app
+        self.title("Add a student")
+        self.transient(app)
+        self.resizable(False, False)
+        frm = ttk.Frame(self, padding=14)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text="For a student who isn't in the list yet (e.g. a new enrolment).").grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        self.vars = {}
+        classes = sorted({s.group for s in app.students if s.group})
+        for row, (key, label) in enumerate((("number", "Student number"), ("first", "First name"),
+                                            ("last", "Last name"), ("group", "Class")), start=1):
+            ttk.Label(frm, text=label).grid(row=row, column=0, sticky="w", pady=3)
+            var = tk.StringVar()
+            if key == "group":
+                w = ttk.Combobox(frm, textvariable=var, values=classes, width=28)
+                if app.current and app.current.group:
+                    var.set(app.current.group)
+            else:
+                w = ttk.Entry(frm, textvariable=var, width=31)
+            w.grid(row=row, column=1, sticky="we", padx=(8, 0), pady=3)
+            self.vars[key] = var
+            if row == 1:
+                w.focus_set()
+        self.error = ttk.Label(frm, text="", foreground="#8A1F1F")
+        self.error.grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        btns = ttk.Frame(frm)
+        btns.grid(row=6, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        ttk.Button(btns, text="Cancel", command=self.destroy).pack(side="right")
+        ttk.Button(btns, text="Add and select", command=self.submit).pack(side="right", padx=(0, 6))
+        self.bind("<Return>", lambda e: self.submit())
+        self.bind("<Escape>", lambda e: self.destroy())
+        for v in self.vars.values():
+            v.trace_add("write", lambda *_: self.error.configure(text=""))
+
+    def submit(self) -> None:
+        v = {k: var.get().strip() for k, var in self.vars.items()}
+        if not v["number"]:
+            self.error.configure(text="Enter the student number.")
+            return
+        if not (v["first"] or v["last"]):
+            self.error.configure(text="Enter the student's name.")
+            return
+        existing = self.app.index.find_by_number(v["number"])
+        if existing:
+            self.error.configure(text=f"{v['number']} is already {existing.display}.")
+            return
+        self.app.add_student(v["number"], v["first"], v["last"], v["group"])
         self.destroy()
 
 
@@ -683,7 +968,8 @@ class ExportDialog(tk.Toplevel):
         ttk.Checkbutton(g1, text="In class folders", variable=self.by_class).pack(anchor="w", pady=(4, 0))
         g2 = ttk.LabelFrame(opts, text="Photos per student", padding=8)
         g2.pack(side="left", fill="y", padx=8)
-        for val, label in (("newest", "One (newest)"), ("first", "One (first taken)"), ("all", "All photos")):
+        for val, label in (("newest", "One: starred, else newest"), ("first", "One: starred, else first"),
+                           ("all", "All photos (starred first)")):
             ttk.Radiobutton(g2, text=label, value=val, variable=self.which).pack(anchor="w")
         g3 = ttk.LabelFrame(opts, text="Name format", padding=8)
         g3.pack(side="left", fill="y")
@@ -799,7 +1085,12 @@ class ExportDialog(tk.Toplevel):
         except OSError as e:
             messagebox.showerror(APP_NAME, f"Couldn't read the folder.\n\n{e}", parent=self)
             return False
-        self.plan = plan_export(photos, self.app.index, opts)
+        try:
+            self.best = load_best(self.sources, self.recursive.get())
+        except OSError:
+            self.best = {}
+        self.plan = plan_export(photos, self.app.index, opts, self.best)
+        starred = {os.path.normcase(os.path.abspath(p)) for p in self.best.values()}
         new_names: dict[str, list[str]] = {}
         for c in self.plan.copies:
             new_names.setdefault(c.src, []).append(c.dest.replace("\\", "/"))
@@ -809,7 +1100,9 @@ class ExportDialog(tk.Toplevel):
             if p.student is None:
                 self.table.insert("", "end", values=(name, "—", "—", p.status), tags=("warn",))
             elif p.path in new_names:
-                self.table.insert("", "end", values=(name, p.student.display, "   ".join(new_names[p.path]), "Matched"))
+                star = os.path.normcase(os.path.abspath(p.path)) in starred
+                self.table.insert("", "end", values=(name, p.student.display, "   ".join(new_names[p.path]),
+                                                     "Matched ★ best" if star else "Matched"))
             else:
                 self.table.insert("", "end", values=(name, p.student.display, "—", "Skipped (older shot)"), tags=("skip",))
         students = len({c.student.key for c in self.plan.copies})

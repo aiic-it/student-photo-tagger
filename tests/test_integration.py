@@ -158,6 +158,89 @@ class WithSimulatedSmartShooter(unittest.TestCase):
         with open(os.path.join(os.environ["APPDATA"], "StudentPhotoTagger", "settings.json")) as f:
             self.assertFalse(json.load(f)["shot_number"])
 
+    def test_last_photo_preview_and_best_shot(self):
+        app, ss = self.app, self.ss
+        self.wait(lambda: ss.options["FilenameExpression"] == "[Z]", what="default [Z]")
+        nimal = app.index.find_by_number("10234")
+        app.select_student(nimal)
+        self.wait(lambda: ss.options["Barcode"] == "10234_Nimal_Perera", what="tag")
+        ss.shoot()
+        time.sleep(1.1)        # different file times so 'newest' is clear
+        ss.shoot()
+        self.wait(lambda: len(app.photos.get(nimal.key, {})) == 2, what="two photos")
+
+        # Last-photo preview shows a real picture and who it belongs to.
+        self.wait(lambda: str(app.last_img.cget("image")) != "", what="last photo preview")
+        self.assertIn("Nimal Perera", app.last_caption.cget("text"))
+        self.assertIn("10234_Nimal_Perera-1.jpg", app.last_caption.cget("text"))
+
+        # The strip shows both photos, newest first, as pictures.
+        self.wait(lambda: len(app.strip_cells) == 2 and
+                  all(str(c[0].cget("image")) for c in app.strip_cells.values()), what="strip thumbnails")
+        paths = list(app.strip_cells)
+        self.assertTrue(paths[0].endswith("10234_Nimal_Perera-1.jpg"))
+
+        # Star the older one; export now uses it instead of the newest.
+        older = paths[1]
+        app.toggle_best(older)
+        self.assertEqual(app.strip_cells[older][1].cget("text"), "★ Best")
+        with open(os.path.join(self.photos_dir, "best_photos.json")) as f:
+            self.assertEqual(json.load(f), {nimal.key: "10234_Nimal_Perera.jpg"})
+        from app.core import ExportOptions, load_best, plan_export, scan_folder
+        plan = plan_export(scan_folder(self.photos_dir, app.index), app.index,
+                           ExportOptions(by_name=False), load_best([self.photos_dir]))
+        self.assertEqual([os.path.basename(c.src) for c in plan.copies if c.student is nimal],
+                         ["10234_Nimal_Perera.jpg"])
+
+        # Clicking the starred photo again removes the star.
+        app.toggle_best(older)
+        self.assertEqual(app.strip_cells[older][1].cget("text"), "☆ Star")
+        self.assertEqual(load_best([self.photos_dir]), {})
+
+        # An unlinked photo shows a warning under the preview.
+        app.clear_student()
+        self.wait(lambda: ss.options["Barcode"] == "NO-STUDENT", what="cleared")
+        ss.shoot()
+        self.wait(lambda: "NOT linked" in app.last_caption.cget("text"), what="unlinked caption")
+
+    def test_add_student_on_the_spot(self):
+        app, ss = self.app, self.ss
+        self.wait(lambda: app.client.connected, what="connection")
+        import app.gui as gui
+        dlg = gui.AddStudentDialog(app)
+        app.update()
+        dlg.vars["number"].set("10234")
+        dlg.vars["first"].set("Someone")
+        dlg.submit()
+        self.assertIn("already Nimal Perera", dlg.error.cget("text"))
+        dlg.vars["number"].set("20001")
+        dlg.vars["first"].set("")
+        dlg.submit()
+        self.assertIn("name", dlg.error.cget("text"))
+        dlg.vars["first"].set("Tharindu")
+        dlg.vars["last"].set("Bandara")
+        dlg.vars["group"].set("7B")
+        dlg.submit()
+        app.update()
+        new = app.index.find_by_number("20001")
+        self.assertIsNotNone(new)
+        self.assertTrue(new.added)
+        self.assertIs(app.current, new)
+        self.assertIn("(added)", app.tree.item(new.key, "values")[2])
+        self.wait(lambda: ss.options["Barcode"] == "20001_Tharindu_Bandara", what="tag for added student")
+        ss.shoot()
+        self.wait(lambda: len(app.photos.get(new.key, {})) == 1, what="added student's photo counted")
+
+        # Kept when the list is reloaded...
+        app.load_list(self.list_path, quiet=True)
+        self.assertIsNotNone(app.index.find_by_number("20001"))
+        # ...and dropped from 'added' once the school's list includes them.
+        with open(self.list_path, "a", encoding="utf-8") as f:
+            f.write("20001,Tharindu,Bandara,7B\n")
+        app.load_list(self.list_path, quiet=True)
+        self.assertFalse(app.index.find_by_number("20001").added)
+        self.assertEqual(app.settings.get("added_students"), [])
+
     def test_reconnect_after_smart_shooter_restart(self):
         app = self.app
         self.wait(lambda: app.client.connected, what="first connection")

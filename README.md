@@ -59,6 +59,21 @@ Banner colours:
 
 A photo saved with no student selected is shown in red in **Activity** and the computer beeps.
 
+### Checking photos and choosing the best one
+
+- **Last photo** (right of the banner) shows each photo as soon as Smart Shooter saves it, with the student
+  it was linked to. If it says **NOT linked to a student** in red, no student was selected. Click it to open the photo.
+- **Photos of the selected student** (right side) shows that student's photos, newest first.
+  Click a photo to **★ star** it as the best one; click it again to remove the star.
+  Export uses the starred photo instead of the newest. Stars are saved in `best_photos.json` in the photo folder.
+- Selecting a student who already has photos says so in **Activity**.
+
+### Adding a student on the day
+
+Click **+ Add student** next to the search box, enter the number, name and class, then **Add and select**.
+Added students show "(added)" in blue and stay in the list each time you open the app, until your school's
+list includes them. **Reports → Save added students list** gives the office a CSV to add them to TASS.
+
 ## Exporting
 
 **Export photos** copies photos from Smart Shooter's folder. **Convert existing photos** does the same for
@@ -68,7 +83,7 @@ any folder of photos named by student number (`10234.jpg`, `10234_2.jpg`, `10234
 1. Under **Photo folders**, click **Add folder…** for each folder of photos (add as many as you like;
    tick **Include subfolders** to look inside them too). Choose **Export to** (a different, empty folder is best).
 2. Pick **By Name**, **By ID** or both; tick **In class folders** to sort copies by the list's class column;
-   **one photo per student** (newest or first) or **all**; and the name format (`Nimal Perera.jpg` or `Perera, Nimal.jpg`).
+   **one photo per student** (the starred photo, otherwise newest or first) or **all**; and the name format (`Nimal Perera.jpg` or `Perera, Nimal.jpg`).
 3. Click **Preview** to see every file and its new name, then **Export**.
 
 You get `By ID\10234.jpg` and `By Name\Nimal Perera.jpg` (or `By Name\7B\Nimal Perera.jpg` with class folders;
