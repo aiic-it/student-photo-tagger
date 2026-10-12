@@ -274,8 +274,11 @@ class App(tk.Tk):
                         "campus": "Campus", "photos": "Photos"}
         for c, w, anchor in (("done", 30, "center"), ("number", 90, "w"), ("name", 220, "w"),
                              ("group", 80, "w"), ("campus", 110, "w"), ("photos", 60, "e")):
-            cmd = (lambda k=heading_sort[c]: self.sort_from_heading(k)) if c in heading_sort else None
-            self.tree.heading(c, text=self._headings[c], command=cmd)
+            if c in heading_sort:
+                self.tree.heading(c, text=self._headings[c],
+                                  command=lambda k=heading_sort[c]: self.sort_from_heading(k))
+            else:
+                self.tree.heading(c, text=self._headings[c])
             self.tree.column(c, width=w, anchor=anchor, stretch=(c == "name"))
         self.tree.tag_configure("done", foreground="#1E5E2F")
         self.tree.tag_configure("current", background="#DCEBFA")

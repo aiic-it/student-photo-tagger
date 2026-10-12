@@ -116,6 +116,7 @@ class WithSimulatedSmartShooter(_Guard):
             json.dump({"last_list": self.list_path, "req_port": REQ_PORT, "pub_port": PUB_PORT}, f)
         self.photos_dir = os.path.join(self.tmp, "photos")
         self.ss = FakeSmartShooter(self.photos_dir, REQ_PORT, PUB_PORT).start()
+        self.addCleanup(lambda: self.ss.stop())   # also runs if setUp fails
         from app.gui import App
         self.app = App()
 
@@ -325,6 +326,7 @@ class WithSimulatedSmartShooter(_Guard):
         time.sleep(0.5)
         from tests.fake_smartshooter import FakeSmartShooter
         self.ss = FakeSmartShooter(self.photos_dir, REQ_PORT, PUB_PORT).start()
+        self.addCleanup(lambda: self.ss.stop())   # also runs if setUp fails
         app.select_student(app.index.find_by_number("10235"))
         self.wait(lambda: self.ss.options["Barcode"] == "10235_Amaya_Silva", timeout=15,
                   what="tag after Smart Shooter restart")
@@ -464,6 +466,7 @@ class CampusSortingAndHistory(_Guard):
             json.dump({"last_list": self.list_path, "req_port": REQ_PORT, "pub_port": PUB_PORT}, f)
         self.photos_dir = os.path.join(self.tmp, "photos")
         self.ss = FakeSmartShooter(self.photos_dir, REQ_PORT, PUB_PORT).start()
+        self.addCleanup(lambda: self.ss.stop())   # also runs if setUp fails
         self.dialogs = []
         self._orig = {n: getattr(gui.messagebox, n) for n in ("showinfo", "showerror", "showwarning", "askyesno")}
         for n in self._orig:

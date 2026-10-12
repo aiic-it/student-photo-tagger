@@ -37,6 +37,8 @@ class FakeSmartShooter:
         return self
 
     def stop(self):
+        if self._stop.is_set():
+            return
         self._stop.set()
         self.thread.join(timeout=3)
         self.pub.close(linger=0)
