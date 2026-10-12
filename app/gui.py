@@ -138,8 +138,21 @@ class App(tk.Tk):
         smenu.add_command(label="Connection address…", command=self.change_host)
         setup["menu"] = smenu
         setup.pack(side="left", padx=(6, 0))
+        names = ttk.LabelFrame(self, text="Smart Shooter file names", padding=(8, 2, 8, 6))
+        self.tag_number = tk.BooleanVar(value=self.settings.get("tag_number", True))
+        self.tag_name = tk.BooleanVar(value=self.settings.get("tag_name", True))
+        ttk.Checkbutton(names, text="Student number", variable=self.tag_number,
+                        command=lambda: self._tag_option_changed(self.tag_number)).pack(side="left")
+        ttk.Checkbutton(names, text="Student name", variable=self.tag_name,
+                        command=lambda: self._tag_option_changed(self.tag_name)).pack(side="left", padx=(12, 0))
+        self.tag_example = ttk.Label(names, foreground="#666666")
+        self.tag_example.pack(side="left", padx=(16, 0))
+        self._names_frame = names
         self.conn_label = ttk.Label(bar, text="Connecting to Smart Shooter…", foreground="#7A4B00")
         self.conn_label.pack(side="right")
+
+        self._names_frame.pack(fill="x", padx=10, pady=(0, 8))
+        self._update_tag_example()
 
         # Banner
         self.banner = tk.Frame(self, bd=0, highlightthickness=1, highlightbackground="#CCCCCC")
@@ -238,6 +251,7 @@ class App(tk.Tk):
         self.recount_from_folder()
         self.refresh_list()
         self._show_current()
+        self._update_tag_example()
         self.log(f"Loaded {len(students)} students from {os.path.basename(path)}")
         if warnings and not quiet:
             more = f"\n…and {len(warnings) - 10} more" if len(warnings) > 10 else ""
@@ -320,9 +334,10 @@ class App(tk.Tk):
         if old:
             self._refresh_row(old)
         self._refresh_row(s)
-        self.sent_tag = make_tag(s)
+        self.sent_tag = self.tag_for(s)
         self.client.set_tag(self.sent_tag, tag="SetTag:" + self.sent_tag)
         self._show_current(pending=True)
+        self._update_tag_example()
         self.log(f"Selected {s.display} ({s.number})")
 
     def next_student(self) -> None:
@@ -408,7 +423,8 @@ class App(tk.Tk):
             self._on_sync(msg)
         elif tag == "ApplyNaming":
             if ok:
-                messagebox.showinfo(APP_NAME, "Smart Shooter will now name photos as\n[student tag]_[shot number], e.g.\n10234_Nimal_Perera_001.jpg")
+                messagebox.showinfo(APP_NAME, "Smart Shooter will now name photos as\n[student tag]_[shot number], e.g.\n"
+                                    + self.example_filename())
                 self.log("Smart Shooter file naming set to [Z]_[S]")
             else:
                 messagebox.showerror(APP_NAME, "Couldn't change Smart Shooter's settings. Check that it's running "
@@ -424,7 +440,9 @@ class App(tk.Tk):
         self.recount_from_folder()
         self.refresh_list()
         if self.current:
-            self.client.set_tag(make_tag(self.current), tag="SetTag:" + make_tag(self.current))
+            t = self.tag_for(self.current)
+            self.sent_tag = t
+            self.client.set_tag(t, tag="SetTag:" + t)
         self._show_current()
 
     def _read_options(self, opts: dict) -> None:
@@ -496,9 +514,43 @@ class App(tk.Tk):
             self._show_current()
         self.after(1000, self._heartbeat)
 
+    # ------------------------------------------------------------------ file-name options
+    @property
+    def tag_mode(self) -> str:
+        if self.tag_number.get() and self.tag_name.get():
+            return "id_name"
+        return "id" if self.tag_number.get() else "name"
+
+    def tag_for(self, s: Student) -> str:
+        return self.index.tag(s, self.tag_mode)
+
+    def example_filename(self) -> str:
+        sample = self.current or (self.students[0] if self.students else Student("10234", "Nimal", "Perera"))
+        tag = self.tag_for(sample) if sample in self.students else make_tag(sample, self.tag_mode)
+        return f"{tag}_001.jpg"
+
+    def _update_tag_example(self) -> None:
+        self.tag_example.configure(text="e.g. " + self.example_filename())
+
+    def _tag_option_changed(self, changed: tk.BooleanVar) -> None:
+        if not (self.tag_number.get() or self.tag_name.get()):
+            changed.set(True)
+            self.bell()
+            self.log("Keep at least one of Student number / Student name ticked", warn=True)
+            return
+        self.settings["tag_number"] = self.tag_number.get()
+        self.settings["tag_name"] = self.tag_name.get()
+        self.save_settings()
+        self._update_tag_example()
+        self.log(f"Smart Shooter file names now look like {self.example_filename()}")
+        if self.current:
+            self.sent_tag = self.tag_for(self.current)
+            self.client.set_tag(self.sent_tag, tag="SetTag:" + self.sent_tag)
+            self._show_current(pending=True)
+
     def apply_naming(self) -> None:
         if messagebox.askyesno(APP_NAME, "Set Smart Shooter's filename pattern to [Z]_[S]?\n\n"
-                                         "Photos will be saved as e.g. 10234_Nimal_Perera_001.jpg, "
+                                         f"Photos will be saved as e.g. {self.example_filename()}, "
                                          "with the shot number restarting for each student."):
             self.client.apply_naming()
 

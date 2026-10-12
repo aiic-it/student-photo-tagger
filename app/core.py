@@ -166,13 +166,31 @@ def safe_part(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip().strip(".")
 
 
-def make_tag(s: Student) -> str:
-    """The text sent to Smart Shooter's [Z] field, e.g. 10234_Nimal_Perera."""
-    parts = [safe_part(p).replace(" ", "-") for p in (s.number, s.first, s.last)]
-    return "_".join(p for p in parts if p)
+TAG_MODES = ("id_name", "id", "name")
+
+
+def _tag_part(p: str) -> str:
+    return safe_part(p).replace(" ", "-")
+
+
+def make_tag(s: Student, mode: str = "id_name", duplicate_name: bool = False) -> str:
+    """The text sent to Smart Shooter's [Z] field.
+
+    id_name -> 10234_Nimal_Perera   id -> 10234   name -> Nimal_Perera
+    (name-only adds the number when two students share a name: Nimal_Perera_10234)
+    """
+    if mode == "id":
+        parts = [s.number]
+    elif mode == "name":
+        parts = [s.first, s.last] + ([s.number] if duplicate_name else [])
+    else:
+        parts = [s.number, s.first, s.last]
+    tag = "_".join(p for p in (_tag_part(x) for x in parts) if p)
+    return tag or _tag_part(s.number)
 
 
 _LEADING_TOKEN = re.compile(r"^\s*([A-Za-z0-9]+)")
+_TRAILING_SEQ = re.compile(r"(?:[ _-]\d{1,4}|\s*\(\d+\))$")
 
 
 def leading_token(filename: str) -> str:
@@ -181,21 +199,65 @@ def leading_token(filename: str) -> str:
     return m.group(1) if m else ""
 
 
+def name_key(text: str) -> str:
+    """Loose form of a name for matching: 'Anne-Marie De Silva' == 'anne_marie_de_silva'."""
+    return re.sub(r"[\s_,\-]+", "_", text.strip().lower()).strip("_")
+
+
 class StudentIndex:
     def __init__(self, students: list[Student]):
         self.students = students
         self.by_key = {s.key: s for s in students}
-        self.by_tag = {make_tag(s): s for s in students}
         counts: dict[str, int] = {}
         for s in students:
             counts[s.display.lower()] = counts.get(s.display.lower(), 0) + 1
         self.duplicate_names = {k for k, v in counts.items() if v > 1}
+        self.by_tag: dict[str, Student] = {}
+        for s in students:
+            for mode in TAG_MODES:
+                self.by_tag.setdefault(self.tag(s, mode), s)
+        # Name lookup for files named after the student (Smart Shooter name-only tags and our exports).
+        names: dict[str, Student | None] = {}
+        for s in students:
+            dup = self.has_duplicate_name(s)
+            keys = {name_key(f"{s.first} {s.last}"), name_key(f"{s.last} {s.first}")}
+            if dup:  # the plain name is ambiguous; only the name + number forms identify them
+                keys = {f"{k}_{name_key(s.number)}" for k in keys}
+                keys |= {name_key(f"{s.first} {s.last} ({s.number})"), name_key(f"{s.last} {s.first} ({s.number})")}
+            for k in keys:
+                if not k:
+                    continue
+                names[k] = None if (k in names and names[k] is not s) else s
+        for s in students:
+            if self.has_duplicate_name(s):
+                for k in (name_key(f"{s.first} {s.last}"), name_key(f"{s.last} {s.first}")):
+                    names[k] = None
+        self.by_name = names
+
+    def tag(self, s: Student, mode: str = "id_name") -> str:
+        return make_tag(s, mode, self.has_duplicate_name(s))
 
     def find_by_number(self, n: str) -> Student | None:
         return self.by_key.get(normalise_number(n)) if n else None
 
+    def find_by_name(self, stem: str) -> Student | None:
+        """Match 'Nimal_Perera_001', 'Nimal Perera', 'Perera, Nimal_2', 'Nimal Perera (10234)'."""
+        text = stem.strip()
+        for _ in range(3):
+            s = self.by_name.get(name_key(text))
+            if s:
+                return s
+            shorter = _TRAILING_SEQ.sub("", text)
+            if shorter == text:
+                break
+            text = shorter
+        return None
+
     def match_file(self, filename: str) -> Student | None:
-        return self.find_by_number(leading_token(filename))
+        s = self.find_by_number(leading_token(filename))
+        if s:
+            return s
+        return self.find_by_name(os.path.splitext(os.path.basename(filename))[0])
 
     def match_photo(self, barcode: str, filename: str) -> Student | None:
         if barcode:
@@ -214,7 +276,7 @@ class StudentIndex:
 class PhotoFile:
     path: str
     student: Student | None
-    status: str          # "Matched", "Not on list", "No student number"
+    status: str          # "Matched", "Not on list", "Not recognised"
     mtime: float = 0.0
 
 
@@ -233,13 +295,13 @@ def scan_folder(folder: str, index: StudentIndex, recursive: bool = False) -> li
             if not os.path.isfile(path):
                 continue
             tok = leading_token(name)
-            s = index.find_by_number(tok)
+            s = index.match_file(name)
             if s:
                 status = "Matched"
             elif tok and any(ch.isdigit() for ch in tok):
                 status = "Not on list"
             else:
-                status = "No student number"
+                status = "Not recognised"
             try:
                 mtime = os.path.getmtime(path)
             except OSError:

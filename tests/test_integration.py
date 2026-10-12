@@ -93,6 +93,43 @@ class WithSimulatedSmartShooter(unittest.TestCase):
         for rel in ("By ID/10234.jpg", "By ID/10235.jpg", "By Name/Nimal Perera.jpg", "By Name/Amaya Silva.jpg"):
             self.assertTrue(os.path.isfile(os.path.join(out, rel)), rel)
 
+    def test_number_only_and_name_only_file_names(self):
+        app, ss = self.app, self.ss
+        self.wait(lambda: app.client.connected, what="connection")
+        nimal = app.index.find_by_number("10234")
+        app.select_student(nimal)
+        self.wait(lambda: ss.options["Barcode"] == "10234_Nimal_Perera", what="default tag")
+
+        app.tag_name.set(False)                       # untick Student name
+        app._tag_option_changed(app.tag_name)
+        self.wait(lambda: ss.options["Barcode"] == "10234", what="number-only tag")
+        self.assertEqual(app.example_filename(), "10234_001.jpg")
+        ss.shoot()
+        self.assertTrue(os.path.isfile(os.path.join(self.photos_dir, "10234_001.jpg")))
+        self.wait(lambda: len(app.photos.get(nimal.key, ())) == 1, what="number-only photo counted")
+
+        app.tag_name.set(True)
+        app.tag_number.set(False)                     # untick Student number
+        app._tag_option_changed(app.tag_number)
+        self.wait(lambda: ss.options["Barcode"] == "Nimal_Perera", what="name-only tag")
+        ss.shoot()
+        self.assertTrue(os.path.isfile(os.path.join(self.photos_dir, "Nimal_Perera_001.jpg")))
+        self.wait(lambda: len(app.photos.get(nimal.key, ())) == 2, what="name-only photo counted")
+
+        app.tag_name.set(False)                       # can't untick both
+        app._tag_option_changed(app.tag_name)
+        self.assertTrue(app.tag_name.get())
+        self.assertFalse(app.tag_number.get())
+
+        from app.core import ExportOptions, plan_export, scan_folder
+        plan = plan_export(scan_folder(self.photos_dir, app.index), app.index, ExportOptions(which="all"))
+        self.assertEqual(len([c for c in plan.copies if c.student is nimal]), 4)   # 2 photos x By ID + By Name
+        self.assertEqual(plan.unmatched, [])
+
+        with open(os.path.join(os.environ["APPDATA"], "StudentPhotoTagger", "settings.json")) as f:
+            saved = json.load(f)
+        self.assertEqual((saved["tag_number"], saved["tag_name"]), (False, True))
+
     def test_reconnect_after_smart_shooter_restart(self):
         app = self.app
         self.wait(lambda: app.client.connected, what="first connection")
@@ -179,7 +216,7 @@ class ConvertExistingPhotosWindow(unittest.TestCase):
         dlg.dest.set(dest)
         self.assertTrue(dlg.preview(), self.dialogs)
         statuses = sorted(dlg.table.item(i, "values")[3] for i in dlg.table.get_children())
-        self.assertEqual(statuses, ["Matched", "Matched", "No student number", "Not on list"])
+        self.assertEqual(statuses, ["Matched", "Matched", "Not recognised", "Not on list"])
         dlg.export()
         end = time.time() + 15
         while dlg.export_result is None and time.time() < end:

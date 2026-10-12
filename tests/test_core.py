@@ -115,7 +115,7 @@ class Export(unittest.TestCase):
         photos = scan_folder(self.src, self.index)
         status = {os.path.basename(p.path): p.status for p in photos}
         self.assertEqual(status["99999.jpg"], "Not on list")
-        self.assertEqual(status["IMG_4411.jpg"], "No student number")
+        self.assertEqual(status["IMG_4411.jpg"], "Not recognised")
         self.assertNotIn("notes.txt", status)
         self.assertNotIn("10236.jpg", status)
         self.assertIn("10236.jpg", {os.path.basename(p.path) for p in scan_folder(self.src, self.index, True)})
@@ -153,6 +153,44 @@ class Export(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(out, "export_report.csv")))
         with open(os.path.join(out, "students_without_photo.csv"), encoding="utf-8-sig") as f:
             self.assertIn("10236", f.read())
+
+
+class TagModes(unittest.TestCase):
+    def setUp(self):
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "s.csv")
+        write(p, "first name,last name,student number\nNimal,Perera,10234\nAmaya,Silva,10235\n"
+                 "Kasun,Perera,10236\nKasun,Perera,10299\nAnne Marie,De Silva,A77\n")
+        students, _ = load_students(p)
+        self.index = StudentIndex(students)
+        self.s = {st.number: st for st in students}
+
+    def test_tags(self):
+        t = self.index.tag
+        self.assertEqual(t(self.s["10234"], "id_name"), "10234_Nimal_Perera")
+        self.assertEqual(t(self.s["10234"], "id"), "10234")
+        self.assertEqual(t(self.s["10234"], "name"), "Nimal_Perera")
+        self.assertEqual(t(self.s["10236"], "name"), "Kasun_Perera_10236")   # shared name gets the number
+        self.assertEqual(t(self.s["A77"], "name"), "Anne-Marie_De-Silva")
+
+    def test_every_mode_matches_back(self):
+        for st in self.s.values():
+            for mode in ("id_name", "id", "name"):
+                tag = self.index.tag(st, mode)
+                self.assertIs(self.index.match_photo(tag, "IMG_0001.JPG"), st, (mode, tag))
+                self.assertIs(self.index.match_file(tag + "_001.jpg"), st, (mode, tag))
+                self.assertIs(self.index.match_file(tag + "_012.CR3"), st, (mode, tag))
+
+    def test_name_forms(self):
+        m = self.index.match_file
+        self.assertEqual(m("Nimal Perera.jpg").number, "10234")
+        self.assertEqual(m("Nimal Perera_2.jpg").number, "10234")
+        self.assertEqual(m("Perera, Nimal.jpg").number, "10234")
+        self.assertEqual(m("nimal perera (1).JPG").number, "10234")
+        self.assertEqual(m("Kasun Perera (10299).jpg").number, "10299")
+        self.assertIsNone(m("Kasun Perera.jpg"))           # two Kasun Pereras: ambiguous
+        self.assertIsNone(m("Nimal.jpg"))
+        self.assertIsNone(m("IMG_4411.jpg"))
 
 
 class ClassesAndFolders(unittest.TestCase):

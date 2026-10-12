@@ -25,6 +25,19 @@ This happens because the app isn't digitally signed.
    student number, first name and last name; a class/year column is shown if present.
    See `sample_students.csv` for the layout. The app remembers the list next time.
 
+## Choosing how Smart Shooter names photos
+
+The **Smart Shooter file names** tick boxes under the toolbar decide what goes in each file name:
+
+| Ticked | Photos are saved as |
+| --- | --- |
+| Student number + Student name | `10234_Nimal_Perera_001.jpg` |
+| Student number only | `10234_001.jpg` |
+| Student name only | `Nimal_Perera_001.jpg` (two students with the same name also get their number) |
+
+At least one must stay ticked. A change applies from the next photo and is remembered. Export and
+Convert recognise all three styles, so you can mix them in one folder.
+
 ## Picture day
 
 1. Type a few letters of the name in **Search** and press **Enter** (or click the name).
