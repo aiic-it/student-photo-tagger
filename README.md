@@ -20,7 +20,7 @@ This happens because the app isn't digitally signed.
 2. **Start Smart Shooter**, connect the camera, then start **StudentPhotoTagger.exe**.
    The top-right corner should say **● Smart Shooter connected**. If Windows Firewall asks, click **Allow**.
 3. In the app, choose **Smart Shooter → Set up file naming** and click **Yes**.
-   Photos will now be saved like `10234_Nimal_Perera_001.jpg`.
+   Photos will now be saved like `10234_Nimal_Perera.jpg`.
 4. Click **Load student list** and pick your CSV or Excel file (a TASS export works). It needs columns for
    student number, first name and last name; a class/year column is shown if present.
    See `sample_students.csv` for the layout. The app remembers the list next time.
@@ -31,11 +31,14 @@ The **Smart Shooter file names** tick boxes under the toolbar decide what goes i
 
 | Ticked | Photos are saved as |
 | --- | --- |
-| Student number + Student name | `10234_Nimal_Perera_001.jpg` |
-| Student number only | `10234_001.jpg` |
-| Student name only | `Nimal_Perera_001.jpg` (two students with the same name also get their number) |
+| Student number + Student name | `10234_Nimal_Perera.jpg` |
+| Student number only | `10234.jpg` |
+| Student name only | `Nimal_Perera.jpg` (two students with the same name also get their number) |
 
-At least one must stay ticked. A change applies from the next photo and is remembered. Export and
+If a student has more than one photo, Smart Shooter adds a number to the later ones so nothing is
+overwritten. Tick **Add shot number** if you'd rather every photo is numbered (`10234_001.jpg`, `10234_002.jpg`).
+
+At least one of number/name must stay ticked. A change applies from the next photo and is remembered. Export and
 Convert recognise all three styles, so you can mix them in one folder.
 
 ## Picture day

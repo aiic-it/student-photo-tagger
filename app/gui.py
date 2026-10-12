@@ -133,7 +133,7 @@ class App(tk.Tk):
         reports.pack(side="left", padx=(6, 0))
         setup = ttk.Menubutton(bar, text="Smart Shooter")
         smenu = tk.Menu(setup, tearoff=False)
-        smenu.add_command(label="Set up file naming ([Z]_[S])…", command=self.apply_naming)
+        smenu.add_command(label="Set up file naming…", command=self.apply_naming)
         smenu.add_command(label="Reconnect", command=self.reconnect)
         smenu.add_command(label="Connection address…", command=self.change_host)
         setup["menu"] = smenu
@@ -145,6 +145,9 @@ class App(tk.Tk):
                         command=lambda: self._tag_option_changed(self.tag_number)).pack(side="left")
         ttk.Checkbutton(names, text="Student name", variable=self.tag_name,
                         command=lambda: self._tag_option_changed(self.tag_name)).pack(side="left", padx=(12, 0))
+        self.shot_number = tk.BooleanVar(value=self.settings.get("shot_number", False))
+        ttk.Checkbutton(names, text="Add shot number (_001)", variable=self.shot_number,
+                        command=self._shot_number_changed).pack(side="left", padx=(24, 0))
         self.tag_example = ttk.Label(names, foreground="#666666")
         self.tag_example.pack(side="left", padx=(16, 0))
         self._names_frame = names
@@ -421,11 +424,16 @@ class App(tk.Tk):
                 self._show_current()
         elif tag == "Synchronise" and msg:
             self._on_sync(msg)
+        elif tag == "AutoNaming":
+            if ok:
+                self.log(f"Smart Shooter file naming set to {self.filename_expression}")
+            else:
+                self.log("Couldn't change Smart Shooter's file naming — use Smart Shooter ▸ Set up file naming",
+                         warn=True)
         elif tag == "ApplyNaming":
             if ok:
-                messagebox.showinfo(APP_NAME, "Smart Shooter will now name photos as\n[student tag]_[shot number], e.g.\n"
-                                    + self.example_filename())
-                self.log("Smart Shooter file naming set to [Z]_[S]")
+                messagebox.showinfo(APP_NAME, "Smart Shooter will now name photos like\n" + self.example_filename())
+                self.log(f"Smart Shooter file naming set to {self.filename_expression}")
             else:
                 messagebox.showerror(APP_NAME, "Couldn't change Smart Shooter's settings. Check that it's running "
                                                "and that External API is turned on in its options.")
@@ -454,10 +462,15 @@ class App(tk.Tk):
             self.settings["download_path"] = path
             self.save_settings()
         expr = opts.get("FilenameExpression")
-        if expr is not None and "[Z]" not in expr and not getattr(self, "_warned_expr", False):
+        if expr is None or expr == self.filename_expression:
+            return
+        if expr in ("[Z]", "[Z]_[S]"):
+            # Set up by this app before; bring it in line with the 'Add shot number' tick box.
+            self.client.apply_naming(self.filename_expression, tag="AutoNaming")
+        elif not getattr(self, "_warned_expr", False):
             self._warned_expr = True
-            self.log("Smart Shooter's file naming doesn't include the student tag [Z]. "
-                     "Use Smart Shooter ▸ Set up file naming.", warn=True)
+            self.log(f"Smart Shooter's file naming is '{expr}', so photos won't be named like "
+                     f"{self.example_filename()}. Use Smart Shooter ▸ Set up file naming.", warn=True)
 
     def _on_event(self, name: str, msg: dict) -> None:
         if name == "OptionsUpdated":
@@ -524,10 +537,21 @@ class App(tk.Tk):
     def tag_for(self, s: Student) -> str:
         return self.index.tag(s, self.tag_mode)
 
+    @property
+    def filename_expression(self) -> str:
+        return "[Z]_[S]" if self.shot_number.get() else "[Z]"
+
     def example_filename(self) -> str:
         sample = self.current or (self.students[0] if self.students else Student("10234", "Nimal", "Perera"))
         tag = self.tag_for(sample) if sample in self.students else make_tag(sample, self.tag_mode)
-        return f"{tag}_001.jpg"
+        return f"{tag}_001.jpg" if self.shot_number.get() else f"{tag}.jpg"
+
+    def _shot_number_changed(self) -> None:
+        self.settings["shot_number"] = self.shot_number.get()
+        self.save_settings()
+        self._update_tag_example()
+        self.client.apply_naming(self.filename_expression, tag="AutoNaming")
+        self.log(f"Smart Shooter file names now look like {self.example_filename()}")
 
     def _update_tag_example(self) -> None:
         self.tag_example.configure(text="e.g. " + self.example_filename())
@@ -549,10 +573,12 @@ class App(tk.Tk):
             self._show_current(pending=True)
 
     def apply_naming(self) -> None:
-        if messagebox.askyesno(APP_NAME, "Set Smart Shooter's filename pattern to [Z]_[S]?\n\n"
-                                         f"Photos will be saved as e.g. {self.example_filename()}, "
-                                         "with the shot number restarting for each student."):
-            self.client.apply_naming()
+        extra = (" The shot number restarts for each student." if self.shot_number.get() else
+                 " If a student has more than one photo, Smart Shooter adds a number to the later ones"
+                 " so nothing is overwritten.")
+        if messagebox.askyesno(APP_NAME, f"Set Smart Shooter's filename pattern to {self.filename_expression}?\n\n"
+                                         f"Photos will be saved as e.g. {self.example_filename()}.{extra}"):
+            self.client.apply_naming(self.filename_expression)
 
     def reconnect(self) -> None:
         self.client.stop()

@@ -60,6 +60,8 @@ class WithSimulatedSmartShooter(unittest.TestCase):
         app, ss = self.app, self.ss
         self.assertEqual(len(app.students), 2)
         self.wait(lambda: app.client.connected and app.download_path == self.photos_dir, what="connection + sync")
+        # Default: no shot number, so the app switches Smart Shooter from [Z]_[S] to [Z].
+        self.wait(lambda: ss.options["FilenameExpression"] == "[Z]", what="pattern set to [Z]")
 
         nimal = app.index.find_by_number("10234")
         app.select_student(nimal)
@@ -69,14 +71,14 @@ class WithSimulatedSmartShooter(unittest.TestCase):
         ss.shoot()
         ss.shoot()
         self.wait(lambda: len(app.photos.get(nimal.key, ())) == 2, what="two photos counted")
-        self.assertTrue(os.path.isfile(os.path.join(self.photos_dir, "10234_Nimal_Perera_001.jpg")))
-        self.assertTrue(os.path.isfile(os.path.join(self.photos_dir, "10234_Nimal_Perera_002.jpg")))
+        self.assertTrue(os.path.isfile(os.path.join(self.photos_dir, "10234_Nimal_Perera.jpg")))
+        self.assertTrue(os.path.isfile(os.path.join(self.photos_dir, "10234_Nimal_Perera-1.jpg")))  # 2nd shot
         self.assertEqual(str(app.tree.item(nimal.key, "values")[4]), "2")
 
         app.next_student()
         self.wait(lambda: ss.options["Barcode"] == "10235_Amaya_Silva", what="next student tag")
         ss.shoot()
-        self.assertTrue(os.path.isfile(os.path.join(self.photos_dir, "10235_Amaya_Silva_001.jpg")))
+        self.assertTrue(os.path.isfile(os.path.join(self.photos_dir, "10235_Amaya_Silva.jpg")))
         self.wait(lambda: len(app.photo_log) == 3, what="third photo logged")
 
         app.clear_student()
@@ -96,6 +98,7 @@ class WithSimulatedSmartShooter(unittest.TestCase):
     def test_number_only_and_name_only_file_names(self):
         app, ss = self.app, self.ss
         self.wait(lambda: app.client.connected, what="connection")
+        self.wait(lambda: ss.options["FilenameExpression"] == "[Z]", what="pattern set to [Z]")
         nimal = app.index.find_by_number("10234")
         app.select_student(nimal)
         self.wait(lambda: ss.options["Barcode"] == "10234_Nimal_Perera", what="default tag")
@@ -103,9 +106,9 @@ class WithSimulatedSmartShooter(unittest.TestCase):
         app.tag_name.set(False)                       # untick Student name
         app._tag_option_changed(app.tag_name)
         self.wait(lambda: ss.options["Barcode"] == "10234", what="number-only tag")
-        self.assertEqual(app.example_filename(), "10234_001.jpg")
+        self.assertEqual(app.example_filename(), "10234.jpg")
         ss.shoot()
-        self.assertTrue(os.path.isfile(os.path.join(self.photos_dir, "10234_001.jpg")))
+        self.assertTrue(os.path.isfile(os.path.join(self.photos_dir, "10234.jpg")))
         self.wait(lambda: len(app.photos.get(nimal.key, ())) == 1, what="number-only photo counted")
 
         app.tag_name.set(True)
@@ -113,7 +116,7 @@ class WithSimulatedSmartShooter(unittest.TestCase):
         app._tag_option_changed(app.tag_number)
         self.wait(lambda: ss.options["Barcode"] == "Nimal_Perera", what="name-only tag")
         ss.shoot()
-        self.assertTrue(os.path.isfile(os.path.join(self.photos_dir, "Nimal_Perera_001.jpg")))
+        self.assertTrue(os.path.isfile(os.path.join(self.photos_dir, "Nimal_Perera.jpg")))
         self.wait(lambda: len(app.photos.get(nimal.key, ())) == 2, what="name-only photo counted")
 
         app.tag_name.set(False)                       # can't untick both
@@ -129,6 +132,31 @@ class WithSimulatedSmartShooter(unittest.TestCase):
         with open(os.path.join(os.environ["APPDATA"], "StudentPhotoTagger", "settings.json")) as f:
             saved = json.load(f)
         self.assertEqual((saved["tag_number"], saved["tag_name"]), (False, True))
+
+    def test_add_shot_number_tick_box(self):
+        app, ss = self.app, self.ss
+        self.wait(lambda: ss.options["FilenameExpression"] == "[Z]", what="default [Z]")
+        app.select_student(app.index.find_by_number("10235"))
+        self.wait(lambda: ss.options["Barcode"] == "10235_Amaya_Silva", what="tag")
+        ss.shoot()
+        self.assertTrue(os.path.isfile(os.path.join(self.photos_dir, "10235_Amaya_Silva.jpg")))
+
+        app.shot_number.set(True)
+        app._shot_number_changed()
+        self.wait(lambda: ss.options["FilenameExpression"] == "[Z]_[S]", what="pattern [Z]_[S]")
+        self.assertEqual(app.example_filename(), "10235_Amaya_Silva_001.jpg")
+        app.next_student()   # changing student restarts the shot number
+        app.select_student(app.index.find_by_number("10234"))
+        self.wait(lambda: ss.options["Barcode"] == "10234_Nimal_Perera", what="tag")
+        ss.shoot()
+        self.assertTrue(os.path.isfile(os.path.join(self.photos_dir, "10234_Nimal_Perera_001.jpg")))
+        self.wait(lambda: len(app.photo_log) == 2, what="both photos logged")
+
+        app.shot_number.set(False)
+        app._shot_number_changed()
+        self.wait(lambda: ss.options["FilenameExpression"] == "[Z]", what="back to [Z]")
+        with open(os.path.join(os.environ["APPDATA"], "StudentPhotoTagger", "settings.json")) as f:
+            self.assertFalse(json.load(f)["shot_number"])
 
     def test_reconnect_after_smart_shooter_restart(self):
         app = self.app

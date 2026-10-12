@@ -78,7 +78,10 @@ class FakeSmartShooter:
     def shoot(self, ext=".jpg"):
         self.seq += 1
         z = self.options.get("Barcode", "")
-        name = self.options["FilenameExpression"].replace("[Z]", z).replace("[S]", f"{self.seq:03d}") + ext
+        base = self.options["FilenameExpression"].replace("[Z]", z).replace("[S]", f"{self.seq:03d}")
+        name, n = base + ext, 1
+        while os.path.exists(os.path.join(self.download_path, name)):  # filename collision check
+            name, n = f"{base}-{n}{ext}", n + 1
         path = os.path.join(self.download_path, name)
         with open(path, "wb") as f:
             f.write(b"fake photo")

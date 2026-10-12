@@ -62,9 +62,9 @@ class SmartShooterClient:
     def set_tag(self, text: str, tag: str = "SetTag") -> None:
         self.request("SetOptions", {"Barcode": text}, tag)
 
-    def apply_naming(self) -> None:
-        self.request("SetOptions", {"FilenameExpression": "[Z]_[S]",
-                                    "ResetSequenceNumOnEdit": True}, "ApplyNaming")
+    def apply_naming(self, expression: str = "[Z]", tag: str = "ApplyNaming") -> None:
+        self.request("SetOptions", {"FilenameExpression": expression,
+                                    "ResetSequenceNumOnEdit": True}, tag)
 
     def synchronise(self) -> None:
         self.request("Synchronise", {}, "Synchronise")
