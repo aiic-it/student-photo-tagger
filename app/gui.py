@@ -13,11 +13,13 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from . import __version__
-from .core import (ExportOptions, ListError, Student, StudentIndex, existing_conflicts,
+from .core import (SORT_OPTIONS, sort_students, ExportOptions, ListError, Student, StudentIndex, existing_conflicts,
                    load_best, load_students, make_tag, plan_export, run_export,
                    scan_folder, scan_folders, set_best, write_student_list)
 from .ss_client import SmartShooterClient
 from .thumbs import Thumbnailer
+from .history import History
+from .history_window import HistoryWindow
 
 try:
     from PIL import ImageTk
@@ -83,7 +85,17 @@ class App(tk.Tk):
         self.was_connected = False
         self.last_sync_attempt = 0.0
 
+        self.history: History | None = None
+        try:
+            self.history = History(os.path.join(os.path.dirname(settings_path()), "history.db"), __version__)
+            self.history.start_session(photo_folder=self.download_path)
+        except Exception as e:  # history is a bonus; never stop the app
+            self.history = None
+            self._history_error = str(e)
+
         self._build_ui()
+        if self.history is None:
+            self.log(f"History is off: couldn't open the history database ({self._history_error})", warn=True)
         self.client = self._new_client()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -103,6 +115,18 @@ class App(tk.Tk):
             pass
         messagebox.showerror(APP_NAME, f"Something went wrong:\n\n{val}\n\nDetails were saved to "
                                        f"%APPDATA%\\StudentPhotoTagger\\error_log.txt")
+
+    def hist(self, method: str, *args, **kwargs):
+        """Call the history database without ever letting a database problem stop the app."""
+        if self.history is None:
+            return None
+        try:
+            return getattr(self.history, method)(*args, **kwargs)
+        except Exception as e:
+            if not getattr(self, "_hist_warned", False):
+                self._hist_warned = True
+                self.log(f"Couldn't save to history: {e}", warn=True)
+            return None
 
     # =================================================================== settings
     def _load_settings(self) -> dict:
@@ -140,6 +164,7 @@ class App(tk.Tk):
         ttk.Button(bar, text="Load student list", command=self.ask_load_list).pack(side="left")
         ttk.Button(bar, text="Export photos", command=lambda: ExportDialog(self, mode="shoot")).pack(side="left", padx=(6, 0))
         ttk.Button(bar, text="Convert existing photos", command=lambda: ExportDialog(self, mode="convert")).pack(side="left", padx=(6, 0))
+        ttk.Button(bar, text="History", command=self.open_history).pack(side="left", padx=(6, 0))
         reports = ttk.Menubutton(bar, text="Reports")
         menu = tk.Menu(reports, tearoff=False)
         menu.add_command(label="Save photo log…", command=self.save_photo_log)
@@ -217,13 +242,36 @@ class App(tk.Tk):
         self.search.bind("<Return>", self._search_enter)
         self.search.bind("<Down>", lambda e: self._focus_tree())
         ttk.Button(search_row, text="+ Add student", command=self.add_student_dialog).pack(side="left", padx=(6, 0))
+        sort_row = ttk.Frame(left)
+        sort_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(sort_row, text="Sort by").pack(side="left")
+        self.sort_by = tk.StringVar(value=self.settings.get("sort_by", "List order"))
+        if self.sort_by.get() not in SORT_OPTIONS:
+            self.sort_by.set("List order")
+        sort_box = ttk.Combobox(sort_row, textvariable=self.sort_by, values=list(SORT_OPTIONS),
+                                state="readonly", width=16)
+        sort_box.pack(side="left", padx=(6, 0))
+        sort_box.bind("<<ComboboxSelected>>", lambda e: self._sort_changed())
+        self.sort_reverse = tk.BooleanVar(value=self.settings.get("sort_reverse", False))
+        ttk.Checkbutton(sort_row, text="Reverse (Z→A)", variable=self.sort_reverse,
+                        command=self._sort_changed).pack(side="left", padx=(10, 0))
+        self.campus_filter = tk.StringVar(value="All campuses")
+        self.campus_box = ttk.Combobox(sort_row, textvariable=self.campus_filter, state="readonly", width=18,
+                                       values=["All campuses"])
+        self.campus_box.pack(side="right")
+        self.campus_box.bind("<<ComboboxSelected>>", lambda e: self.refresh_list())
+        ttk.Label(sort_row, text="Show").pack(side="right", padx=(0, 6))
 
-        cols = ("done", "number", "name", "group", "photos")
+        cols = ("done", "number", "name", "group", "campus", "photos")
         self.tree = ttk.Treeview(left, columns=cols, show="headings", selectmode="browse")
-        for c, label, w, anchor in (("done", "", 30, "center"), ("number", "Number", 90, "w"),
-                                    ("name", "Name", 240, "w"), ("group", "Class", 90, "w"),
-                                    ("photos", "Photos", 60, "e")):
-            self.tree.heading(c, text=label)
+        self._headings = {"done": "", "number": "Number", "name": "Name", "group": "Class",
+                          "campus": "Campus", "photos": "Photos"}
+        heading_sort = {"number": "Student number", "name": "Surname", "group": "Class",
+                        "campus": "Campus", "photos": "Photos"}
+        for c, w, anchor in (("done", 30, "center"), ("number", 90, "w"), ("name", 220, "w"),
+                             ("group", 80, "w"), ("campus", 110, "w"), ("photos", 60, "e")):
+            cmd = (lambda k=heading_sort[c]: self.sort_from_heading(k)) if c in heading_sort else None
+            self.tree.heading(c, text=self._headings[c], command=cmd)
             self.tree.column(c, width=w, anchor=anchor, stretch=(c == "name"))
         self.tree.tag_configure("done", foreground="#1E5E2F")
         self.tree.tag_configure("current", background="#DCEBFA")
@@ -302,7 +350,11 @@ class App(tk.Tk):
         self.current = None
         self.settings["last_list"] = path
         self.save_settings()
+        self.hist("save_students", students)
+        self.hist("update_session", list_file=path)
+        self.hist("log", "list_loaded", None, f"{len(students)} students from {path}")
         self.recount_from_folder()
+        self._update_campus_choices()
         self.refresh_list()
         self._show_current()
         self._update_tag_example()
@@ -321,6 +373,9 @@ class App(tk.Tk):
         for f in files:
             if f.student:
                 self.photos.setdefault(f.student.key, {})[os.path.basename(f.path).lower()] = f.path
+        self.hist("record_photos", [(f.path, f.student.key if f.student else None,
+                                     time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(f.mtime)))
+                                    for f in files])
         try:
             self.best.update(load_best([self.download_path]))
         except OSError:
@@ -328,9 +383,16 @@ class App(tk.Tk):
 
     def refresh_list(self) -> None:
         q = self.search_var.get().strip().lower()
+        campus = self.campus_filter.get()
         self.tree.delete(*self.tree.get_children())
-        for s in self.students:
-            hay = f"{s.number} {s.first} {s.last} {s.last} {s.first} {s.group}".lower()
+        key = SORT_OPTIONS.get(self.sort_by.get(), "list")
+        ordered = sort_students(self.students, key, self.sort_reverse.get(),
+                                photo_count=lambda st: len(self.photos.get(st.key, ())))
+        self._paint_headings(key)
+        for s in ordered:
+            if campus not in ("", "All campuses") and (s.campus or "(No campus)") != campus:
+                continue
+            hay = f"{s.number} {s.first} {s.last} {s.last} {s.first} {s.group} {s.campus}".lower()
             if q and not all(part in hay for part in q.split()):
                 continue
             self.tree.insert("", "end", iid=s.key, values=self._row_values(s), tags=self._row_tags(s))
@@ -342,7 +404,37 @@ class App(tk.Tk):
     def _row_values(self, s: Student):
         n = len(self.photos.get(s.key, ()))
         name = s.display + ("  (added)" if s.added else "")
-        return ("✓" if n else "", s.number, name, s.group, n or "")
+        return ("✓" if n else "", s.number, name, s.group, s.campus, n or "")
+
+    # ------------------------------------------------------------------ sorting / campus filter
+    def _sort_changed(self) -> None:
+        self.settings["sort_by"] = self.sort_by.get()
+        self.settings["sort_reverse"] = self.sort_reverse.get()
+        self.save_settings()
+        self.refresh_list()
+
+    def sort_from_heading(self, label: str) -> None:
+        if self.sort_by.get() == label:
+            self.sort_reverse.set(not self.sort_reverse.get())
+        else:
+            self.sort_by.set(label)
+            self.sort_reverse.set(False)
+        self._sort_changed()
+
+    def _paint_headings(self, key: str) -> None:
+        col_for = {"number": "number", "last": "name", "first": "name", "class": "group",
+                   "campus": "campus", "photos": "photos"}
+        arrow = " ▼" if self.sort_reverse.get() else " ▲"
+        for c, text in self._headings.items():
+            self.tree.heading(c, text=text + (arrow if col_for.get(key) == c else ""))
+
+    def _update_campus_choices(self) -> None:
+        campuses = sorted({s.campus for s in self.students if s.campus}, key=str.lower)
+        if any(not s.campus for s in self.students) and campuses:
+            campuses.append("(No campus)")
+        self.campus_box.configure(values=["All campuses"] + campuses)
+        if self.campus_filter.get() not in ["All campuses"] + campuses:
+            self.campus_filter.set("All campuses")
 
     def _row_tags(self, s: Student):
         tags = []
@@ -400,6 +492,7 @@ class App(tk.Tk):
         self._show_current(pending=True)
         self._update_tag_example()
         self._refresh_strip()
+        self.hist("log", "select", s.key, s.display)
         if self.photos.get(s.key):
             n = len(self.photos[s.key])
             self.log(f"Selected {s.display} ({s.number}) — already has {n} photo{'s' if n != 1 else ''}")
@@ -533,6 +626,7 @@ class App(tk.Tk):
             self.download_path = path
             self.settings["download_path"] = path
             self.save_settings()
+            self.hist("update_session", photo_folder=path)
         expr = opts.get("FilenameExpression")
         if expr is None or expr == self.filename_expression:
             return
@@ -580,8 +674,17 @@ class App(tk.Tk):
         elif live:
             self.log(f"Saved {name} — NOT linked to a student", warn=True)
             self.bell()
+        full_path = path or os.path.join(self.download_path, name)
+        taken = None
+        if not live:
+            try:
+                taken = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(os.path.getmtime(full_path)))
+            except OSError:
+                pass
+        if self.hist("record_photo", full_path, s.key if s else None, taken):
+            self.hist("log", "photo", s.key if s else None, name + ("" if s else " (not linked)"))
         if live and (path or self.download_path):
-            self._show_last_photo(path or os.path.join(self.download_path, name), s)
+            self._show_last_photo(full_path, s)
         return True
 
     def _heartbeat(self) -> None:
@@ -643,6 +746,7 @@ class App(tk.Tk):
         self.save_settings()
         self._update_tag_example()
         self.log(f"Smart Shooter file names now look like {self.example_filename()}")
+        self.hist("log", "settings", None, f"file names like {self.example_filename()}")
         if self.current:
             self.sent_tag = self.tag_for(self.current)
             self.client.set_tag(self.sent_tag, tag="SetTag:" + self.sent_tag)
@@ -699,6 +803,8 @@ class App(tk.Tk):
     def _on_close(self) -> None:
         self.client.stop()
         self.thumbs.stop()
+        if self.history:
+            self.history.close()
         self.destroy()
 
     # =================================================================== previews
@@ -799,6 +905,7 @@ class App(tk.Tk):
         except OSError as e:
             messagebox.showerror(APP_NAME, f"Couldn't save the star.\n\n{e}")
             return
+        self.hist("set_star", path, s.key, not already)
         if already:
             self.best.pop(s.key, None)
             self.log(f"Removed the star from {os.path.basename(path)}")
@@ -813,7 +920,8 @@ class App(tk.Tk):
         listed = {s.key for s in students}
         keep, now_listed = [], 0
         for d in self.settings.get("added_students", []):
-            st = Student(str(d.get("number", "")), d.get("first", ""), d.get("last", ""), d.get("group", ""), added=True)
+            st = Student(str(d.get("number", "")), d.get("first", ""), d.get("last", ""), d.get("group", ""),
+                         d.get("campus", ""), added=True)
             if not st.number:
                 continue
             if st.key in listed:
@@ -827,19 +935,30 @@ class App(tk.Tk):
             self.save_settings()
         return students, now_listed
 
-    def add_student(self, number: str, first: str, last: str, group: str = "") -> Student:
-        st = Student(number.strip(), first.strip(), last.strip(), group.strip(), added=True)
+    def add_student(self, number: str, first: str, last: str, group: str = "", campus: str = "") -> Student:
+        st = Student(number.strip(), first.strip(), last.strip(), group.strip(), campus.strip(), added=True)
         self.settings.setdefault("added_students", []).append(
-            {"number": st.number, "first": st.first, "last": st.last, "group": st.group})
+            {"number": st.number, "first": st.first, "last": st.last, "group": st.group, "campus": st.campus})
         self.save_settings()
         self.students.append(st)
         self.index = StudentIndex(self.students)
+        self.hist("save_students", [st])
+        self.hist("log", "student_added", st.key, f"{st.display}, {st.group}, {st.campus}".strip(", "))
         self.search_var.set("")
+        self._update_campus_choices()
+        if self.campus_filter.get() not in ("All campuses", st.campus or "(No campus)"):
+            self.campus_filter.set("All campuses")
         self.refresh_list()
         self.log(f"Added {st.display} ({st.number})")
         self.tree.selection_set(st.key)
         self.tree.see(st.key)
         return st
+
+    def open_history(self) -> None:
+        if self.history is None:
+            messagebox.showinfo(APP_NAME, "History isn't available on this PC (the history database couldn't be opened).")
+            return
+        return HistoryWindow(self)
 
     def add_student_dialog(self) -> None:
         AddStudentDialog(self)
@@ -868,15 +987,17 @@ class AddStudentDialog(tk.Toplevel):
         ttk.Label(frm, text="For a student who isn't in the list yet (e.g. a new enrolment).").grid(
             row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
         self.vars = {}
-        classes = sorted({s.group for s in app.students if s.group})
+        choices = {"group": sorted({s.group for s in app.students if s.group}),
+                   "campus": sorted({s.campus for s in app.students if s.campus})}
         for row, (key, label) in enumerate((("number", "Student number"), ("first", "First name"),
-                                            ("last", "Last name"), ("group", "Class")), start=1):
+                                            ("last", "Last name"), ("group", "Class"), ("campus", "Campus")), start=1):
             ttk.Label(frm, text=label).grid(row=row, column=0, sticky="w", pady=3)
             var = tk.StringVar()
-            if key == "group":
-                w = ttk.Combobox(frm, textvariable=var, values=classes, width=28)
-                if app.current and app.current.group:
-                    var.set(app.current.group)
+            if key in choices:
+                w = ttk.Combobox(frm, textvariable=var, values=choices[key], width=28)
+                current = getattr(app.current, key, "") if app.current else ""
+                if current:
+                    var.set(current)
             else:
                 w = ttk.Entry(frm, textvariable=var, width=31)
             w.grid(row=row, column=1, sticky="we", padx=(8, 0), pady=3)
@@ -884,9 +1005,9 @@ class AddStudentDialog(tk.Toplevel):
             if row == 1:
                 w.focus_set()
         self.error = ttk.Label(frm, text="", foreground="#8A1F1F")
-        self.error.grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self.error.grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
         btns = ttk.Frame(frm)
-        btns.grid(row=6, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        btns.grid(row=7, column=0, columnspan=2, sticky="e", pady=(10, 0))
         ttk.Button(btns, text="Cancel", command=self.destroy).pack(side="right")
         ttk.Button(btns, text="Add and select", command=self.submit).pack(side="right", padx=(0, 6))
         self.bind("<Return>", lambda e: self.submit())
@@ -906,7 +1027,7 @@ class AddStudentDialog(tk.Toplevel):
         if existing:
             self.error.configure(text=f"{v['number']} is already {existing.display}.")
             return
-        self.app.add_student(v["number"], v["first"], v["last"], v["group"])
+        self.app.add_student(v["number"], v["first"], v["last"], v["group"], v["campus"])
         self.destroy()
 
 
@@ -961,11 +1082,13 @@ class ExportDialog(tk.Toplevel):
         self.which = tk.StringVar(value=s.get("which", "newest"))
         self.fmt = tk.StringVar(value=s.get("name_format", "first_last"))
         self.by_class = tk.BooleanVar(value=s.get("by_class", False))
+        self.by_campus = tk.BooleanVar(value=s.get("by_campus", False))
         g1 = ttk.LabelFrame(opts, text="Make copies", padding=8)
         g1.pack(side="left", fill="y")
         ttk.Checkbutton(g1, text="By Name", variable=self.by_name).pack(anchor="w")
         ttk.Checkbutton(g1, text="By ID", variable=self.by_id).pack(anchor="w")
-        ttk.Checkbutton(g1, text="In class folders", variable=self.by_class).pack(anchor="w", pady=(4, 0))
+        ttk.Checkbutton(g1, text="In campus folders", variable=self.by_campus).pack(anchor="w", pady=(4, 0))
+        ttk.Checkbutton(g1, text="In class folders", variable=self.by_class).pack(anchor="w")
         g2 = ttk.LabelFrame(opts, text="Photos per student", padding=8)
         g2.pack(side="left", fill="y", padx=8)
         for val, label in (("newest", "One: starred, else newest"), ("first", "One: starred, else first"),
@@ -1000,7 +1123,7 @@ class ExportDialog(tk.Toplevel):
         self.bar = ttk.Progressbar(frm, mode="determinate")
         self.bar.grid(row=7, column=0, columnspan=3, sticky="we", pady=(8, 0))
 
-        for var in (self.recursive, self.by_name, self.by_id, self.by_class, self.which, self.fmt):
+        for var in (self.recursive, self.by_name, self.by_id, self.by_class, self.by_campus, self.which, self.fmt):
             var.trace_add("write", lambda *_: self._invalidate())
         self.lift()
         self.focus_set()
@@ -1063,7 +1186,8 @@ class ExportDialog(tk.Toplevel):
 
     def _export_options(self) -> ExportOptions:
         return ExportOptions(by_name=self.by_name.get(), by_id=self.by_id.get(), which=self.which.get(),
-                             name_format=self.fmt.get(), by_class=self.by_class.get())
+                             name_format=self.fmt.get(), by_class=self.by_class.get(),
+                             by_campus=self.by_campus.get())
 
     def preview(self) -> bool:
         if not self.app.students:
@@ -1177,6 +1301,10 @@ class ExportDialog(tk.Toplevel):
         self.export_btn.state(["!disabled"])
         copied = len(plan.copies) - len(errors)
         self.export_result = (copied, errors)
+        opts = self._export_options()
+        self.app.hist("record_export", "export" if self.mode == "shoot" else "convert", dest, list(self.sources),
+                      {k: getattr(opts, k) for k in ("by_name", "by_id", "by_class", "by_campus", "which",
+                                                     "name_format")}, plan, errors)
         msg = f"Exported {copied} files to:\n{dest}\n\nA report (export_report.csv) is in the same folder."
         if errors:
             msg += f"\n\n{len(errors)} files couldn't be copied — see the report."
@@ -1187,7 +1315,7 @@ class ExportDialog(tk.Toplevel):
     def _remember(self, dest) -> None:
         s = self.app.settings
         s.update({"export_dest": dest, "recursive": self.recursive.get(), "by_name": self.by_name.get(),
-                  "by_id": self.by_id.get(), "by_class": self.by_class.get(), "which": self.which.get(),
+                  "by_id": self.by_id.get(), "by_class": self.by_class.get(), "by_campus": self.by_campus.get(), "which": self.which.get(),
                   "name_format": self.fmt.get()})
         if self.mode == "convert":
             s["convert_sources"] = list(self.sources)

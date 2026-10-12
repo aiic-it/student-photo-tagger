@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core import (ExportOptions, ListError, StudentIndex, leading_token, load_students,  # noqa: E402
                       make_tag, plan_export, run_export, scan_folder, scan_folders,
-                      load_best, set_best)
+                      load_best, set_best, sort_students)
 
 
 def write(path, text, enc="utf-8"):
@@ -279,6 +279,45 @@ class StarredPhotos(unittest.TestCase):
         set_best(os.path.join(self.f, "10235.jpg"), "10235")
         names = {os.path.basename(p.path) for p in scan_folder(self.f, self.index)}
         self.assertNotIn("best_photos.json", names)
+
+
+class CampusAndSorting(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        p = os.path.join(self.d, "s.csv")
+        write(p, "Student ID,Given Name,Surname,Roll Class,Campus\n"
+                 "10,Zara,Abeysekara,10A,North\n9,Amaya,Silva,7B,South\n100,Nimal,Perera,7B,North\n"
+                 "11,Kasun,Fernando,9C,\n")
+        self.students, _ = load_students(p)
+        self.index = StudentIndex(self.students)
+
+    def order(self, key, reverse=False):
+        return [s.first for s in sort_students(self.students, key, reverse)]
+
+    def test_campus_read(self):
+        self.assertEqual([s.campus for s in self.students], ["North", "South", "North", ""])
+
+    def test_sorting(self):
+        self.assertEqual(self.order("list"), ["Zara", "Amaya", "Nimal", "Kasun"])
+        self.assertEqual(self.order("number"), ["Amaya", "Zara", "Kasun", "Nimal"])     # 9, 10, 11, 100
+        self.assertEqual(self.order("last"), ["Zara", "Kasun", "Nimal", "Amaya"])
+        self.assertEqual(self.order("first"), ["Amaya", "Kasun", "Nimal", "Zara"])
+        self.assertEqual(self.order("campus"), ["Nimal", "Zara", "Amaya", "Kasun"])     # North (7B, 10A), South, none
+        self.assertEqual(self.order("class"), ["Nimal", "Amaya", "Kasun", "Zara"])      # 7B (by surname), 9C, 10A
+        self.assertEqual(self.order("number", reverse=True), ["Nimal", "Kasun", "Zara", "Amaya"])
+
+    def test_campus_and_class_folders(self):
+        f = os.path.join(self.d, "photos")
+        for n in ("10", "9", "100", "11"):
+            touch(os.path.join(f, n + ".jpg"))
+        photos = scan_folder(f, self.index)
+        plan = plan_export(photos, self.index, ExportOptions(by_id=False, by_campus=True))
+        self.assertEqual(sorted(c.dest.replace("\\", "/") for c in plan.copies), [
+            "By Name/No campus/Kasun Fernando.jpg", "By Name/North/Nimal Perera.jpg",
+            "By Name/North/Zara Abeysekara.jpg", "By Name/South/Amaya Silva.jpg"])
+        plan = plan_export(photos, self.index, ExportOptions(by_name=False, by_campus=True, by_class=True))
+        self.assertEqual(sorted(c.dest.replace("\\", "/") for c in plan.copies), [
+            "By ID/No campus/9C/11.jpg", "By ID/North/10A/10.jpg", "By ID/North/7B/100.jpg", "By ID/South/7B/9.jpg"])
 
 
 if __name__ == "__main__":

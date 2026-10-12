@@ -22,7 +22,7 @@ This happens because the app isn't digitally signed.
 3. In the app, choose **Smart Shooter → Set up file naming** and click **Yes**.
    Photos will now be saved like `10234_Nimal_Perera.jpg`.
 4. Click **Load student list** and pick your CSV or Excel file (a TASS export works). It needs columns for
-   student number, first name and last name; a class/year column is shown if present.
+   student number, first name and last name. Class and Campus columns are used if present.
    See `sample_students.csv` for the layout. The app remembers the list next time.
 
 ## Choosing how Smart Shooter names photos
@@ -47,6 +47,9 @@ Convert recognise all three styles, so you can mix them in one folder.
 2. Wait for the banner to turn **green**: that means Smart Shooter has the student's name.
 3. Take the photos. Each one appears under **Activity** and the student gets a ✓ and a count.
 4. Click **Next student ▶** (or Ctrl+N) to move down the list.
+
+**Sorting:** use **Sort by** (Campus, Surname, First name, Student number, Class, Photos) or click a column
+heading; click it again to reverse. **Show** limits the list to one campus. **Next student** follows the order on screen.
 
 Banner colours:
 
@@ -82,12 +85,12 @@ any folder of photos named by student number (`10234.jpg`, `10234_2.jpg`, `10234
 
 1. Under **Photo folders**, click **Add folder…** for each folder of photos (add as many as you like;
    tick **Include subfolders** to look inside them too). Choose **Export to** (a different, empty folder is best).
-2. Pick **By Name**, **By ID** or both; tick **In class folders** to sort copies by the list's class column;
+2. Pick **By Name**, **By ID** or both; tick **In campus folders** and/or **In class folders** to sort copies by the list's Campus and Class columns;
    **one photo per student** (the starred photo, otherwise newest or first) or **all**; and the name format (`Nimal Perera.jpg` or `Perera, Nimal.jpg`).
 3. Click **Preview** to see every file and its new name, then **Export**.
 
-You get `By ID\10234.jpg` and `By Name\Nimal Perera.jpg` (or `By Name\7B\Nimal Perera.jpg` with class folders;
-students with no class go in `No class`). The same student found in several folders counts as several photos,
+You get `By ID\10234.jpg` and `By Name\Nimal Perera.jpg` (or `By Name\North\7B\Nimal Perera.jpg` with campus and class folders;
+students with no campus or class go in `No campus` / `No class`). The same student found in several folders counts as several photos,
 so **One (newest)** picks the most recent across all folders. Students with the same name get their number
 added, e.g. `Nimal Perera (10234).jpg`. RAW + JPG pairs stay together. Originals are never changed.
 
@@ -95,6 +98,21 @@ The export folder also gets `export_report.csv` (every copy plus unmatched files
 `students_without_photo.csv`.
 
 **Reports** in the main window saves the day's photo log and a not-yet-photographed list.
+
+## History
+
+The app keeps a history database on this PC (`%APPDATA%\StudentPhotoTagger\history.db`) of every photo,
+which student it belongs to, stars, added students and exports, across all picture days. Click **History**:
+
+| Tab | Shows |
+| --- | --- |
+| Students | Every student ever loaded, with all their photos across years, the starred one, and how often each was exported. Double-click to open a photo. |
+| Picture days | Each day photos were taken: counts, unlinked photos, and every photo that day. |
+| Exports | Every export and convert, with the folder (double-click to open it). |
+| Activity | Who was selected, photos saved, stars, added students, settings changes. |
+
+**Save full history as CSV** gives a spreadsheet of every photo. Back up `history.db` with the photos if you
+want to keep history when replacing the PC.
 
 ## Troubleshooting
 

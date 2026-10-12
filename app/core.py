@@ -27,6 +27,7 @@ HEADER_ALIASES = {
     "last": ["last name", "lastname", "last", "surname", "family name"],
     "group": ["class", "year", "year level", "form", "homeroom", "roll class", "tutor group",
               "house", "grade", "pc", "pastoral care"],
+    "campus": ["campus", "campus name", "campus code", "site", "location", "school campus"],
 }
 
 INVALID_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
@@ -38,6 +39,7 @@ class Student:
     first: str
     last: str
     group: str = ""
+    campus: str = ""
     added: bool = field(default=False, compare=False)   # added on the day, not in the loaded list
 
     @property
@@ -136,7 +138,7 @@ def load_students(path: str) -> tuple[list[Student], list[str]]:
     warnings: list[str] = []
     seen: dict[str, Student] = {}
     for n, r in enumerate(data, start=2 if data is not rows else 1):
-        s = Student(get(r, "number"), get(r, "first"), get(r, "last"), get(r, "group"))
+        s = Student(get(r, "number"), get(r, "first"), get(r, "last"), get(r, "group"), get(r, "campus"))
         if not (s.number or s.first or s.last):
             continue
         if not s.number:
@@ -271,6 +273,40 @@ class StudentIndex:
         return s.display.lower() in self.duplicate_names
 
 
+# --------------------------------------------------------------------------- sorting
+
+SORT_OPTIONS = {          # label -> key used by sort_students
+    "List order": "list",
+    "Campus": "campus",
+    "Surname": "last",
+    "First name": "first",
+    "Student number": "number",
+    "Class": "class",
+    "Photos": "photos",
+}
+
+
+def _natural(text: str):
+    """'7B' < '10A', '9' < '10': compare numbers by value, text case-insensitively."""
+    return [(0, int(t), "") if t.isdigit() else (1, 0, t) for t in re.split(r"(\d+)", (text or "").lower()) if t]
+
+
+def sort_students(students: list[Student], key: str, reverse: bool = False,
+                  photo_count=None) -> list[Student]:
+    surname = lambda s: (_natural(s.last), _natural(s.first), _natural(s.number))
+    keys = {
+        "campus": lambda s: (not s.campus, _natural(s.campus), _natural(s.group)) + surname(s),
+        "last": surname,
+        "first": lambda s: (_natural(s.first), _natural(s.last), _natural(s.number)),
+        "number": lambda s: _natural(s.number),
+        "class": lambda s: (not s.group, _natural(s.group)) + surname(s),
+        "photos": lambda s: ((photo_count(s) if photo_count else 0),) + surname(s),
+    }
+    if key not in keys:
+        return list(reversed(students)) if reverse else list(students)
+    return sorted(students, key=keys[key], reverse=reverse)
+
+
 # --------------------------------------------------------------------------- scanning
 
 @dataclass
@@ -333,9 +369,15 @@ class ExportOptions:
     which: str = "newest"          # "all", "newest", "first"
     name_format: str = "first_last"  # "first_last" or "last_first"
     by_class: bool = False           # put copies in a sub-folder per class
+    by_campus: bool = False          # ...and/or per campus (Campus\Class when both)
 
 
 NO_CLASS_FOLDER = "No class"
+NO_CAMPUS_FOLDER = "No campus"
+
+
+def campus_folder(s: Student) -> str:
+    return safe_part(s.campus) or NO_CAMPUS_FOLDER
 
 
 def class_folder(s: Student) -> str:
@@ -404,7 +446,7 @@ def plan_export(photos: list[PhotoFile], index: StudentIndex, opts: ExportOption
             ordered = ordered[:1]
 
         targets = []
-        sub = [class_folder(s)] if opts.by_class else []
+        sub = ([campus_folder(s)] if opts.by_campus else []) + ([class_folder(s)] if opts.by_class else [])
         if opts.by_id:
             targets.append((os.path.join("By ID", *sub), safe_part(s.number)))
         if opts.by_name:
@@ -495,20 +537,21 @@ def write_report(plan: ExportPlan, dest_root: str, errors: list[str]) -> None:
     os.makedirs(dest_root, exist_ok=True)
     with open(os.path.join(dest_root, "export_report.csv"), "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["Status", "Student number", "First name", "Last name", "Class", "Original file", "Exported as"])
+        w.writerow(["Status", "Student number", "First name", "Last name", "Class", "Campus",
+                    "Original file", "Exported as"])
         for c in plan.copies:
             w.writerow(["Exported", c.student.number, c.student.first, c.student.last, c.student.group,
-                        c.src, c.dest])
+                        c.student.campus, c.src, c.dest])
         for p in plan.unmatched:
-            w.writerow([p.status, "", "", "", "", p.path, ""])
+            w.writerow([p.status, "", "", "", "", "", p.path, ""])
         for e in errors:
-            w.writerow(["Error", "", "", "", "", e, ""])
+            w.writerow(["Error", "", "", "", "", "", e, ""])
     write_student_list(plan.students_without_photo, os.path.join(dest_root, "students_without_photo.csv"))
 
 
 def write_student_list(students: list[Student], path: str) -> None:
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["Student number", "First name", "Last name", "Class"])
+        w.writerow(["Student number", "First name", "Last name", "Class", "Campus"])
         for s in students:
-            w.writerow([s.number, s.first, s.last, s.group])
+            w.writerow([s.number, s.first, s.last, s.group, s.campus])

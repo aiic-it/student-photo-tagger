@@ -370,5 +370,125 @@ class ConvertExistingPhotosWindow(unittest.TestCase):
         dlg.destroy()
 
 
+@unittest.skipUnless(CAN_RUN, "needs pyzmq and a display")
+class CampusSortingAndHistory(unittest.TestCase):
+    def setUp(self):
+        from tests.fake_smartshooter import FakeSmartShooter
+        import app.gui as gui
+        self.gui = gui
+        self.tmp = tempfile.mkdtemp()
+        os.environ["APPDATA"] = os.path.join(self.tmp, "appdata")
+        os.makedirs(os.path.join(os.environ["APPDATA"], "StudentPhotoTagger"))
+        self.list_path = os.path.join(self.tmp, "students.csv")
+        with open(self.list_path, "w", encoding="utf-8") as f:
+            f.write("Student ID,First Name,Surname,Class,Campus\n"
+                    "10,Zara,Abeysekara,10A,North\n9,Amaya,Silva,7B,South\n100,Nimal,Perera,7B,North\n")
+        with open(os.path.join(os.environ["APPDATA"], "StudentPhotoTagger", "settings.json"), "w") as f:
+            json.dump({"last_list": self.list_path, "req_port": REQ_PORT, "pub_port": PUB_PORT}, f)
+        self.photos_dir = os.path.join(self.tmp, "photos")
+        self.ss = FakeSmartShooter(self.photos_dir, REQ_PORT, PUB_PORT).start()
+        self.dialogs = []
+        self._orig = {n: getattr(gui.messagebox, n) for n in ("showinfo", "showerror", "showwarning", "askyesno")}
+        for n in self._orig:
+            setattr(gui.messagebox, n, lambda *a, _n=n, **k: self.dialogs.append((_n, a[1] if len(a) > 1 else "")) or False)
+        self.app = gui.App()
+
+    def tearDown(self):
+        for n, f in self._orig.items():
+            setattr(self.gui.messagebox, n, f)
+        self.app._on_close()
+        self.ss.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def wait(self, cond, timeout=10, what="condition"):
+        end = time.time() + timeout
+        while time.time() < end:
+            self.app.update()
+            if cond():
+                return
+            time.sleep(0.05)
+        self.fail(f"Timed out waiting for {what}")
+
+    def shown(self):
+        return [self.app.tree.item(i, "values")[2] for i in self.app.tree.get_children()]
+
+    def test_campus_column_sorting_and_filter(self):
+        app = self.app
+        self.assertEqual(app.tree.item("10", "values")[4], "North")
+        app.sort_by.set("Student number"); app._sort_changed()
+        self.assertEqual(self.shown(), ["Amaya Silva", "Zara Abeysekara", "Nimal Perera"])     # 9, 10, 100
+        app.sort_by.set("Surname"); app._sort_changed()
+        self.assertEqual(self.shown(), ["Zara Abeysekara", "Nimal Perera", "Amaya Silva"])
+        app.sort_by.set("First name"); app._sort_changed()
+        self.assertEqual(self.shown(), ["Amaya Silva", "Nimal Perera", "Zara Abeysekara"])
+        app.sort_by.set("Campus"); app._sort_changed()
+        self.assertEqual(self.shown(), ["Nimal Perera", "Zara Abeysekara", "Amaya Silva"])      # North 7B, 10A; South
+        app.sort_from_heading("Campus")                                                          # click again = reverse
+        self.assertTrue(app.sort_reverse.get())
+        self.assertEqual(self.shown(), ["Amaya Silva", "Zara Abeysekara", "Nimal Perera"])
+        self.assertTrue(app.tree.heading("campus", "text").endswith("▼"))
+        app.sort_from_heading("Student number")
+        self.assertEqual(self.shown(), ["Amaya Silva", "Zara Abeysekara", "Nimal Perera"])
+        self.assertEqual(app.settings["sort_by"], "Student number")
+        app.campus_filter.set("North"); app.refresh_list()
+        self.assertEqual(self.shown(), ["Zara Abeysekara", "Nimal Perera"])
+        self.assertIn("South", app.campus_box.cget("values"))
+        # Next student follows the order on screen.
+        app.next_student(); app.update()
+        self.assertEqual(app.current.number, "10")
+        app.next_student(); app.update()
+        self.assertEqual(app.current.number, "100")
+
+    def test_export_into_campus_folders_and_history(self):
+        app, ss = self.app, self.ss
+        self.wait(lambda: app.client.connected and ss.options["FilenameExpression"] == "[Z]", what="connected")
+        for number in ("100", "9"):
+            app.select_student(app.index.find_by_number(number))
+            self.wait(lambda: ss.options["Barcode"].startswith(number + "_"), what=f"tag {number}")
+            ss.shoot()
+        self.wait(lambda: len(app.photo_log) == 2, what="photos")
+        app.toggle_best(app.student_photo_paths(app.index.find_by_number("9"))[0])
+
+        dlg = self.gui.ExportDialog(app, mode="shoot")
+        app.update()
+        dlg.by_campus.set(True)
+        dlg.by_class.set(True)
+        dest = os.path.join(self.tmp, "export")
+        dlg.dest.set(dest)
+        self.assertTrue(dlg.preview(), self.dialogs)
+        dlg.export()
+        self.wait(lambda: dlg.export_result is not None, what="export")
+        for rel in ("By Name/North/7B/Nimal Perera.jpg", "By Name/South/7B/Amaya Silva.jpg",
+                    "By ID/North/7B/100.jpg", "By ID/South/7B/9.jpg"):
+            self.assertTrue(os.path.isfile(os.path.join(dest, rel)), rel)
+        with open(os.path.join(dest, "export_report.csv"), encoding="utf-8-sig") as f:
+            self.assertIn("Campus", f.readline())
+        dlg.destroy()
+
+        # History records it all, and survives a restart.
+        h = app.history
+        self.assertEqual(h.student_rows("nimal")[0]["photos"], 1)
+        self.assertEqual(h.student_rows("amaya")[0]["starred"], "9_Amaya_Silva.jpg")
+        self.assertEqual(h.exports()[0]["copies"], 4)
+        self.assertEqual(h.photos_for("100")[0]["times_exported"], 2)
+        win = app.open_history()
+        app.update()
+        self.assertEqual(len(win.s_tree.get_children()), 3)
+        win.s_tree.selection_set("100"); app.update()
+        self.assertEqual(len(win.sp_tree.get_children()), 1)
+        self.assertEqual(len(win.e_tree.get_children()), 1)
+        self.assertGreaterEqual(len(win.d_tree.get_children()), 1)
+        kinds = [win.a_tree.item(i, "values")[1] for i in win.a_tree.get_children()]
+        for k in ("Export", "Starred", "Photo saved", "Selected", "Loaded list"):
+            self.assertIn(k, kinds)
+        out = os.path.join(self.tmp, "history.csv")
+        self.assertEqual(h.save_csv(out), 2)
+        win.destroy()
+
+        app._on_close()
+        self.app = self.gui.App()
+        self.assertEqual(self.app.history.student_rows("nimal")[0]["photos"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
