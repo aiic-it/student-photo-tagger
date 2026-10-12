@@ -216,7 +216,7 @@ class ConvertExistingPhotosWindow(unittest.TestCase):
         dlg.dest.set(dest)
         self.assertTrue(dlg.preview(), self.dialogs)
         statuses = sorted(dlg.table.item(i, "values")[3] for i in dlg.table.get_children())
-        self.assertEqual(statuses, ["Matched", "Matched", "Not recognised", "Not on list"])
+        self.assertEqual(statuses, ["Matched", "Matched", "Not on list", "Not recognised"])
         dlg.export()
         end = time.time() + 15
         while dlg.export_result is None and time.time() < end:
