@@ -101,7 +101,11 @@ class App(tk.Tk):
 
         last = self.settings.get("last_list")
         if last and os.path.isfile(last):
-            self.load_list(last, quiet=True)
+            try:
+                self.load_list(last, quiet=True)
+            except Exception:
+                self.client.stop()      # don't leave background threads running if start-up fails
+                raise
         self.after(200, self._pump)
         self.after(1000, self._heartbeat)
 

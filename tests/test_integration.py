@@ -70,6 +70,25 @@ class _Guard(unittest.TestCase):
     def run(self, result=None):
         import faulthandler
         faulthandler.dump_traceback_later(TEST_TIME_LIMIT, exit=True)
+        if result is not None and not getattr(result, "_guard_wrapped", False):
+            # Print each error straight away (short form), so it's visible even if the run later stops.
+            import traceback
+            for name in ("addError", "addFailure"):
+                orig = getattr(result, name)
+
+                def wrapped(test, err, _orig=orig, _name=name):
+                    try:
+                        lines = traceback.format_exception_only(err[0], err[1])
+                        tb = traceback.extract_tb(err[2])[-6:]
+                        where = "".join(f"  {f.filename}:{f.lineno} in {f.name}\n    {f.line}\n" for f in tb)
+                        sys.stderr.write(f"\n[{_name}] {test.id()}\n{where}{''.join(lines)}\n")
+                        sys.stderr.flush()
+                    except Exception:
+                        pass
+                    return _orig(test, err)
+
+                setattr(result, name, wrapped)
+            result._guard_wrapped = True
         CALLBACK_ERRORS.clear()
         self.addCleanup(self._check_callbacks)
         try:

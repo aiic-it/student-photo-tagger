@@ -37,8 +37,10 @@ jobs:
           blocks = text.split("=" * 70)[1:]
           if not blocks:
               first = text.find("Traceback (most recent call last)")
-              start = max(0, (first if first >= 0 else len(text)) - 1500)
-              blocks = ["Tests stopped early. First error:\n" + text[start:start + 3500],
+              if first < 0:
+                  first = text.find("Timeout (")
+              start = max(0, (first if first >= 0 else len(text)) - 2500)
+              blocks = ["Tests stopped early. Output before it stopped:\n" + text[start:start + 3500],
                         "Last output:\n" + text[-2500:]]
           for block in blocks:
               msg = block.strip()[:3500].replace("%", "%25").replace("\r", "").replace("\n", "%0A")

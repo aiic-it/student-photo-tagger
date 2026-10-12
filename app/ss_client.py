@@ -30,7 +30,9 @@ class SmartShooterClient:
         self._seq = 0
         self.last_contact = 0.0
         self._threads: list[threading.Thread] = []
-        self._ctx = zmq.Context() if zmq else None
+        # One shared ZeroMQ context for the whole app. A private context that gets garbage-collected
+        # while its sockets are still open in background threads can freeze the program.
+        self._ctx = zmq.Context.instance() if zmq else None
 
     # ----------------------------------------------------------------- lifecycle
     def start(self) -> None:
@@ -46,9 +48,7 @@ class SmartShooterClient:
         self._stop.set()
         self._requests.put(None)
         for t in self._threads:
-            t.join(timeout=2)
-        if self._ctx:
-            self._ctx.destroy(linger=0)
+            t.join(timeout=2)       # each thread closes its own socket when it sees the stop flag
 
     @property
     def connected(self) -> bool:
