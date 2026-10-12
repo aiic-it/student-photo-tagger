@@ -12,6 +12,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -24,6 +25,7 @@ jobs:
 
       - name: Test (including a simulated Smart Shooter)
         shell: bash
+        timeout-minutes: 10
         run: |
           set +e
           python -m unittest discover -s tests -t . -v > test-output.txt 2>&1
@@ -32,8 +34,9 @@ jobs:
           if [ $code -ne 0 ]; then
             python - <<'PY'
           text = open("test-output.txt", encoding="utf-8", errors="replace").read()
-          for block in text.split("=" * 70)[1:]:
-              msg = block.strip()[:3000].replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+          blocks = text.split("=" * 70)[1:] or ["Tests stopped early. Last output:\n" + text[-4000:]]
+          for block in blocks:
+              msg = block.strip()[:3500].replace("%", "%25").replace("\r", "").replace("\n", "%0A")
               print("::error title=Test failure::" + msg)
           PY
           fi

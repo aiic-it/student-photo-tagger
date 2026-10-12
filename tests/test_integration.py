@@ -23,10 +23,68 @@ except Exception as e:  # no zmq, no tkinter, or no display
         raise RuntimeError(f"Integration tests must run on the build machine: {e}")
 
 REQ_PORT, PUB_PORT = 55544, 55543
+TEST_TIME_LIMIT = 120   # seconds; a hung test dumps where it was stuck and stops the run
+
+CALLBACK_ERRORS: list = []
+_saved: dict = {}
+
+
+def setUpModule():
+    """Pop-up messages would wait for a click forever on the build machine, so record them instead,
+    and make any error inside the app fail loudly rather than opening an error box."""
+    if not CAN_RUN:
+        return
+    import faulthandler
+    import traceback
+    from tkinter import messagebox
+    import app.gui as gui
+    for n in ("showinfo", "showerror", "showwarning", "askyesno", "askokcancel"):
+        _saved[n] = getattr(messagebox, n)
+        setattr(messagebox, n, lambda *a, _n=n, **k: print(f"[dialog {_n}] {a[1] if len(a) > 1 else ''}") or False)
+    _saved["report"] = gui.App.report_callback_exception
+
+    def record(self, exc, val, tb):
+        text = "".join(traceback.format_exception(exc, val, tb))
+        CALLBACK_ERRORS.append(text)
+        print("CALLBACK ERROR\n" + text, file=sys.stderr)
+
+    gui.App.report_callback_exception = record
+    faulthandler.enable()
+
+
+def tearDownModule():
+    if not CAN_RUN:
+        return
+    from tkinter import messagebox
+    import app.gui as gui
+    for n, f in _saved.items():
+        if n == "report":
+            gui.App.report_callback_exception = f
+        else:
+            setattr(messagebox, n, f)
+
+
+class _Guard(unittest.TestCase):
+    """Every window test: time limit, and fail if the app hit an error inside a callback."""
+
+    def run(self, result=None):
+        import faulthandler
+        faulthandler.dump_traceback_later(TEST_TIME_LIMIT, exit=True)
+        CALLBACK_ERRORS.clear()
+        self.addCleanup(self._check_callbacks)
+        try:
+            return super().run(result)
+        finally:
+            faulthandler.cancel_dump_traceback_later()
+
+    def _check_callbacks(self):
+        if CALLBACK_ERRORS:
+            errors, CALLBACK_ERRORS[:] = list(CALLBACK_ERRORS), []
+            self.fail("Error inside the app during the test:\n" + "\n".join(errors))
 
 
 @unittest.skipUnless(CAN_RUN, "needs pyzmq and a display")
-class WithSimulatedSmartShooter(unittest.TestCase):
+class WithSimulatedSmartShooter(_Guard):
     def setUp(self):
         from tests.fake_smartshooter import FakeSmartShooter
         self.tmp = tempfile.mkdtemp()
@@ -73,7 +131,7 @@ class WithSimulatedSmartShooter(unittest.TestCase):
         self.wait(lambda: len(app.photos.get(nimal.key, ())) == 2, what="two photos counted")
         self.assertTrue(os.path.isfile(os.path.join(self.photos_dir, "10234_Nimal_Perera.jpg")))
         self.assertTrue(os.path.isfile(os.path.join(self.photos_dir, "10234_Nimal_Perera-1.jpg")))  # 2nd shot
-        self.assertEqual(str(app.tree.item(nimal.key, "values")[4]), "2")
+        self.assertEqual(str(app.tree.item(nimal.key, "values")[5]), "2")
 
         app.next_student()
         self.wait(lambda: ss.options["Barcode"] == "10235_Amaya_Silva", what="next student tag")
@@ -254,7 +312,7 @@ class WithSimulatedSmartShooter(unittest.TestCase):
 
 
 @unittest.skipUnless(CAN_RUN, "needs a display")
-class ConvertExistingPhotosWindow(unittest.TestCase):
+class ConvertExistingPhotosWindow(_Guard):
     """Drives the real 'Convert existing photos' window: preview, then export."""
 
     def setUp(self):
@@ -371,7 +429,7 @@ class ConvertExistingPhotosWindow(unittest.TestCase):
 
 
 @unittest.skipUnless(CAN_RUN, "needs pyzmq and a display")
-class CampusSortingAndHistory(unittest.TestCase):
+class CampusSortingAndHistory(_Guard):
     def setUp(self):
         from tests.fake_smartshooter import FakeSmartShooter
         import app.gui as gui
