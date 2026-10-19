@@ -25,6 +25,27 @@ This happens because the app isn't digitally signed.
    student number, first name and last name. Class and Campus columns are used if present.
    See `sample_students.csv` for the layout. The app remembers the list next time.
 
+## Loading students straight from TASS
+
+Instead of a CSV, the app can read the student list from TASS (TASS REST API).
+
+**Your TASS administrator** creates an API user with the permission **Students > Information > Student: Read**
+and gives you its **ClientKey** and **ClientSecret**. Don't email or chat these; type them into the app.
+
+1. **TASS → TASS connection settings…**: enter the TASS web address (e.g. `tass.yourschool.edu.au`), the
+   ClientKey and ClientSecret, then **Test connection**. It fills in the company code and lists the campus codes.
+2. Choose where the **Class** column comes from (Tutor group, Form class, Year group or House), whether to use
+   **preferred names**, and optionally limit to some **campuses** or **year groups**.
+3. **Save and load students**. Only current students are loaded (not those who have left; future
+   enrolments only if ticked).
+
+Use **TASS → Load students from TASS** on the morning of picture day to pick up new enrolments. The last list
+from TASS is kept on the PC, so the app still opens with it if the network is down.
+
+The secret is saved encrypted for your Windows user account. The app only reads from TASS; it never changes TASS.
+
+Students with TASS's **privacy flag** show **⚠** in the list, and the banner warns when one is selected.
+
 ## Choosing how Smart Shooter names photos
 
 The **Smart Shooter file names** tick boxes under the toolbar decide what goes in each file name:

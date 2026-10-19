@@ -20,6 +20,7 @@ from .ss_client import SmartShooterClient
 from .thumbs import Thumbnailer
 from .history import History
 from .history_window import HistoryWindow
+from .tass_window import TassSettingsDialog, load_from_tass
 
 try:
     from PIL import ImageTk
@@ -66,6 +67,7 @@ class App(tk.Tk):
         self.title(f"{APP_NAME} {__version__}")
         self.geometry("1050x700")
         self.minsize(820, 560)
+        self.settings_file = settings_path()
         self.settings = self._load_settings()
 
         self.students: list[Student] = []
@@ -166,6 +168,12 @@ class App(tk.Tk):
         bar = ttk.Frame(self, padding=(10, 8))
         bar.pack(fill="x")
         ttk.Button(bar, text="Load student list", command=self.ask_load_list).pack(side="left")
+        tass_btn = ttk.Menubutton(bar, text="TASS")
+        tmenu = tk.Menu(tass_btn, tearoff=False)
+        tmenu.add_command(label="Load students from TASS", command=lambda: load_from_tass(self))
+        tmenu.add_command(label="TASS connection settings…", command=lambda: TassSettingsDialog(self))
+        tass_btn["menu"] = tmenu
+        tass_btn.pack(side="left", padx=(6, 0))
         ttk.Button(bar, text="Export photos", command=lambda: ExportDialog(self, mode="shoot")).pack(side="left", padx=(6, 0))
         ttk.Button(bar, text="Convert existing photos", command=lambda: ExportDialog(self, mode="convert")).pack(side="left", padx=(6, 0))
         ttk.Button(bar, text="History", command=self.open_history).pack(side="left", padx=(6, 0))
@@ -283,6 +291,7 @@ class App(tk.Tk):
         self.tree.tag_configure("done", foreground="#1E5E2F")
         self.tree.tag_configure("current", background="#DCEBFA")
         self.tree.tag_configure("added", foreground="#1F4E8C")
+        self.tree.tag_configure("privacy", foreground="#9A3412")
         sb = ttk.Scrollbar(left, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -410,7 +419,7 @@ class App(tk.Tk):
 
     def _row_values(self, s: Student):
         n = len(self.photos.get(s.key, ()))
-        name = s.display + ("  (added)" if s.added else "")
+        name = ("⚠ " if s.privacy else "") + s.display + ("  (added)" if s.added else "")
         return ("✓" if n else "", s.number, name, s.group, s.campus, n or "")
 
     # ------------------------------------------------------------------ sorting / campus filter
@@ -451,6 +460,8 @@ class App(tk.Tk):
             tags.append("current")
         if s.added:
             tags.append("added")
+        if s.privacy:
+            tags.append("privacy")
         return tags
 
     def _refresh_row(self, s: Student) -> None:
@@ -500,6 +511,8 @@ class App(tk.Tk):
         self._update_tag_example()
         self._refresh_strip()
         self.hist("log", "select", s.key, s.display)
+        if s.privacy:
+            self.log(f"⚠ {s.display} has the privacy flag set", warn=True)
         if self.photos.get(s.key):
             n = len(self.photos[s.key])
             self.log(f"Selected {s.display} ({s.number}) — already has {n} photo{'s' if n != 1 else ''}")
@@ -539,8 +552,10 @@ class App(tk.Tk):
                                          else "Load a student list, then click a name.")
             self._paint_banner("idle")
             return
-        self.banner_big.configure(text=s.display)
-        extra = f"  ·  {s.group}" if s.group else ""
+        self.banner_big.configure(text=("⚠ " if s.privacy else "") + s.display)
+        extra = (f"  ·  {s.group}" if s.group else "") + (f"  ·  {s.campus}" if s.campus else "")
+        if s.privacy:
+            extra += "  ·  ⚠ PRIVACY FLAG SET — check before photographing or publishing"
         if not self.client.connected and not pending:
             self.banner_detail.configure(text=f"{s.number}{extra}  ·  Smart Shooter is not connected — photos will NOT be named")
             self._paint_banner("error")

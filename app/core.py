@@ -27,7 +27,8 @@ HEADER_ALIASES = {
     "last": ["last name", "lastname", "last", "surname", "family name"],
     "group": ["class", "year", "year level", "form", "homeroom", "roll class", "tutor group",
               "house", "grade", "pc", "pastoral care"],
-    "campus": ["campus", "campus name", "campus code", "site", "location", "school campus"],
+    "campus": ["campus", "campus name", "campus code", "campus_code", "site", "location", "school campus"],
+    "privacy": ["privacy", "privacy flag", "privacy_flg", "photo privacy", "no photo"],
 }
 
 INVALID_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
@@ -40,6 +41,7 @@ class Student:
     last: str
     group: str = ""
     campus: str = ""
+    privacy: bool = field(default=False, compare=False)  # TASS privacy flag (or a Privacy column in the list)
     added: bool = field(default=False, compare=False)   # added on the day, not in the loaded list
 
     @property
@@ -138,7 +140,8 @@ def load_students(path: str) -> tuple[list[Student], list[str]]:
     warnings: list[str] = []
     seen: dict[str, Student] = {}
     for n, r in enumerate(data, start=2 if data is not rows else 1):
-        s = Student(get(r, "number"), get(r, "first"), get(r, "last"), get(r, "group"), get(r, "campus"))
+        s = Student(get(r, "number"), get(r, "first"), get(r, "last"), get(r, "group"), get(r, "campus"),
+                    privacy=get(r, "privacy").lower() in ("y", "yes", "true", "1", "x"))
         if not (s.number or s.first or s.last):
             continue
         if not s.number:
@@ -552,6 +555,6 @@ def write_report(plan: ExportPlan, dest_root: str, errors: list[str]) -> None:
 def write_student_list(students: list[Student], path: str) -> None:
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["Student number", "First name", "Last name", "Class", "Campus"])
+        w.writerow(["Student number", "First name", "Last name", "Class", "Campus", "Privacy"])
         for s in students:
-            w.writerow([s.number, s.first, s.last, s.group, s.campus])
+            w.writerow([s.number, s.first, s.last, s.group, s.campus, "Yes" if s.privacy else ""])

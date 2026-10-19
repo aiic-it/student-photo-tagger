@@ -570,5 +570,94 @@ class CampusSortingAndHistory(_Guard):
         self.assertEqual(self.app.history.student_rows("nimal")[0]["photos"], 1)
 
 
+@unittest.skipUnless(CAN_RUN, "needs pyzmq and a display")
+class LoadFromTass(_Guard):
+    def setUp(self):
+        import app.gui as gui
+        from tests.fake_tass import FakeTass, make_students
+        self.gui = gui
+        self.tmp = tempfile.mkdtemp()
+        os.environ["APPDATA"] = os.path.join(self.tmp, "appdata")
+        os.makedirs(os.path.join(os.environ["APPDATA"], "StudentPhotoTagger"))
+        with open(os.path.join(os.environ["APPDATA"], "StudentPhotoTagger", "settings.json"), "w") as f:
+            json.dump({"req_port": REQ_PORT, "pub_port": PUB_PORT}, f)
+        rows = make_students(40)
+        rows[0].update({"preferred_name": "Andy", "privacy_flg": True})
+        rows[1].update({"dol": "2020-12-31"})                  # left the school
+        self.tass = FakeTass(rows).start()
+        self.addCleanup(self.tass.stop)
+        self.dialogs = []
+        self._orig = {n: getattr(gui.messagebox, n) for n in ("showinfo", "showerror", "showwarning", "askyesno")}
+        for n in self._orig:
+            setattr(gui.messagebox, n, lambda *a, _n=n, **k: self.dialogs.append((_n, a[1] if len(a) > 1 else "")) or False)
+        self.app = gui.App()
+
+    def tearDown(self):
+        for n, f in self._orig.items():
+            setattr(self.gui.messagebox, n, f)
+        self.app._on_close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def wait(self, cond, timeout=15, what="condition"):
+        end = time.time() + timeout
+        while time.time() < end:
+            self.app.update()
+            if cond():
+                return
+            time.sleep(0.05)
+        self.fail(f"Timed out waiting for {what}; dialogs: {self.dialogs}")
+
+    def test_settings_test_save_and_load(self):
+        from tests.fake_tass import KEY, SECRET
+        from app.tass_window import TassSettingsDialog
+        app = self.app
+        dlg = TassSettingsDialog(app)
+        app.update()
+        dlg.url.set(self.tass.url)
+        dlg.key.set(KEY)
+        dlg.secret.set("wrong")
+        dlg.test()
+        self.wait(lambda: "didn't accept" in dlg.status.cget("text"), what="wrong secret message")
+        dlg.secret.set(SECRET)
+        dlg.test()
+        self.wait(lambda: dlg.status.cget("text").startswith("Connected"), what="connected")
+        self.assertEqual(dlg.company.get(), "10")
+        self.assertIn("40 students in TASS, 39 match", dlg.status.cget("text"))
+        self.assertIn("NTH, STH", dlg.status.cget("text"))
+        dlg.campuses.set("NTH")
+        dlg.save(load=True)
+        self.wait(lambda: len(app.students) == 19, what="NTH students loaded")   # 20 odd rows are NTH; row 1 has left
+        self.assertNotIn(SECRET, json.dumps(app.settings))                    # stored encrypted, never plain
+        self.assertEqual({s.campus for s in app.students}, {"NTH"})
+        self.assertIsNone(app.index.find_by_number("0010001"))                 # left the school
+
+        # Privacy flag shows in the list and the banner.
+        app.campus_filter.set("All campuses")
+        dlg2 = TassSettingsDialog(app)
+        dlg2.campuses.set("")
+        dlg2.save(load=True)
+        self.wait(lambda: len(app.students) == 39, what="all current students")
+        andy = app.index.find_by_number("0010000")
+        self.assertEqual((andy.first, andy.privacy), ("Andy", True))
+        self.assertTrue(app.tree.item(andy.key, "values")[2].startswith("⚠"))
+        app.select_student(andy)
+        app.update()
+        self.assertIn("PRIVACY FLAG", app.banner_detail.cget("text"))
+
+        # Next start uses the saved copy of the TASS list (works without the network).
+        app._on_close()
+        self.tass.stop()
+        self.app = self.gui.App()
+        self.assertEqual(len(self.app.students), 39)
+        self.assertTrue(self.app.index.find_by_number("0010000").privacy)
+
+        # A failed refresh says so and keeps the current list.
+        from app.tass_window import load_from_tass
+        load_from_tass(self.app)
+        self.wait(lambda: any(d[0] == "showerror" for d in self.dialogs), what="error dialog")
+        self.assertIn("Can't reach TASS", [d for d in self.dialogs if d[0] == "showerror"][-1][1])
+        self.assertEqual(len(self.app.students), 39)
+
+
 if __name__ == "__main__":
     unittest.main()
