@@ -1079,8 +1079,9 @@ class App(tk.Tk):
             self.last_report = path
             open_folder(path)
 
+        school = self._scope_label().strip(" —")     # read on this thread: Tk values can't be read from a worker
         run_in_background(self, lambda: contact_sheets(students, lambda s: photos.get(s.key), path,
-                                                       school=self._scope_label().strip(" —")), done)
+                                                       school=school), done)
 
     def make_retake_list(self) -> None:
         from .reports import retake_list_csv, retake_list_pdf, retake_rows
