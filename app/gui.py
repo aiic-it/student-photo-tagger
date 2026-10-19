@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from . import __version__
@@ -20,7 +21,8 @@ from .ss_client import SmartShooterClient
 from .thumbs import Thumbnailer
 from .history import History
 from .history_window import HistoryWindow
-from .tass_window import TassSettingsDialog, load_from_tass
+from .tass_window import TassSettingsDialog, load_from_tass, run_in_background
+from . import update
 
 try:
     from PIL import ImageTk
@@ -82,6 +84,7 @@ class App(tk.Tk):
         self._tk_images: dict[str, object] = {}
         self.last_photo: tuple[str, Student | None] | None = None
         self.best: dict[str, str] = {}
+        self.retakes: dict[str, str] = dict(self.settings.get("retakes", {}))   # student key -> note
         self.seen_photo_keys: set[str] = set()
         self.photo_log: list[list[str]] = []
         self.was_connected = False
@@ -110,6 +113,8 @@ class App(tk.Tk):
                 raise
         self.after(200, self._pump)
         self.after(1000, self._heartbeat)
+        if self.settings.get("update_check", True):
+            self.after(3000, lambda: self.check_for_updates(quiet=True))
 
     def report_callback_exception(self, exc, val, tb) -> None:
         import traceback
@@ -182,6 +187,9 @@ class App(tk.Tk):
         menu.add_command(label="Save photo log…", command=self.save_photo_log)
         menu.add_command(label="Save not-yet-photographed list…", command=self.save_missing_list)
         menu.add_command(label="Save added students list…", command=self.save_added_list)
+        menu.add_separator()
+        menu.add_command(label="Contact sheets (PDF)…", command=self.make_contact_sheets)
+        menu.add_command(label="Retake list (PDF and CSV)…", command=self.make_retake_list)
         reports["menu"] = menu
         reports.pack(side="left", padx=(6, 0))
         setup = ttk.Menubutton(bar, text="Smart Shooter")
@@ -206,6 +214,16 @@ class App(tk.Tk):
         self._names_frame = names
         self.conn_label = ttk.Label(bar, text="Connecting to Smart Shooter…", foreground="#7A4B00")
         self.conn_label.pack(side="right")
+        self.update_label = tk.Label(bar, text="", fg="#1F4E8C", cursor="hand2", font=("Segoe UI", 9, "underline"))
+        help_btn = ttk.Menubutton(bar, text="Help")
+        hmenu = tk.Menu(help_btn, tearoff=False)
+        hmenu.add_command(label="Check for updates…", command=lambda: self.check_for_updates(quiet=False))
+        hmenu.add_command(label="Open the download page", command=lambda: webbrowser.open(update.RELEASES_PAGE))
+        hmenu.add_separator()
+        hmenu.add_command(label=f"About ({APP_NAME} {__version__})", command=lambda: messagebox.showinfo(
+            APP_NAME, f"{APP_NAME} {__version__}\n\nSettings and history: %APPDATA%\\StudentPhotoTagger"))
+        help_btn["menu"] = hmenu
+        help_btn.pack(side="left", padx=(6, 0))
 
         self._names_frame.pack(fill="x", padx=10, pady=(0, 8))
         self._update_tag_example()
@@ -236,6 +254,8 @@ class App(tk.Tk):
         self.banner_btns = btns
         ttk.Button(btns, text="Next student  ▶", command=self.next_student).pack(side="left")
         ttk.Button(btns, text="Clear", command=self.clear_student).pack(side="left", padx=(6, 0))
+        self.retake_btn = ttk.Button(btns, text="Mark for retake", command=self.toggle_retake)
+        self.retake_btn.pack(side="left", padx=(18, 0))
         self._paint_banner("idle")
 
         # Body
@@ -420,7 +440,8 @@ class App(tk.Tk):
     def _row_values(self, s: Student):
         n = len(self.photos.get(s.key, ()))
         name = ("⚠ " if s.privacy else "") + s.display + ("  (added)" if s.added else "")
-        return ("✓" if n else "", s.number, name, s.group, s.campus, n or "")
+        mark = "↻" if s.key in self.retakes else ("✓" if n else "")
+        return (mark, s.number, name, s.group, s.campus, n or "")
 
     # ------------------------------------------------------------------ sorting / campus filter
     def _sort_changed(self) -> None:
@@ -546,6 +567,8 @@ class App(tk.Tk):
 
     def _show_current(self, pending: bool = False) -> None:
         s = self.current
+        if hasattr(self, "retake_btn"):
+            self.retake_btn.configure(text="Undo retake mark" if s and s.key in self.retakes else "Mark for retake")
         if not s:
             self.banner_big.configure(text="No student selected")
             self.banner_detail.configure(text="Photos taken now won't be linked to a student." if self.students
@@ -556,6 +579,8 @@ class App(tk.Tk):
         extra = (f"  ·  {s.group}" if s.group else "") + (f"  ·  {s.campus}" if s.campus else "")
         if s.privacy:
             extra += "  ·  ⚠ PRIVACY FLAG SET — check before photographing or publishing"
+        if s.key in self.retakes:
+            extra += "  ·  ↻ marked for retake"
         if not self.client.connected and not pending:
             self.banner_detail.configure(text=f"{s.number}{extra}  ·  Smart Shooter is not connected — photos will NOT be named")
             self._paint_banner("error")
@@ -687,6 +712,8 @@ class App(tk.Tk):
         if s:
             full = path or os.path.join(self.download_path, name)
             self.photos.setdefault(s.key, {})[name.lower()] = full
+            if live and s.key in self.retakes:
+                self.set_retake(s, False, why="retaken")
             if live:
                 self._refresh_row(s)
                 self.log(f"Saved {name}")
@@ -984,6 +1011,122 @@ class App(tk.Tk):
 
     def add_student_dialog(self) -> None:
         AddStudentDialog(self)
+
+    # =================================================================== retakes
+    def set_retake(self, s: Student, needed: bool, note: str = "", why: str = "") -> None:
+        if needed:
+            self.retakes[s.key] = note
+        else:
+            self.retakes.pop(s.key, None)
+        self.settings["retakes"] = self.retakes
+        self.save_settings()
+        self._refresh_row(s)
+        if needed:
+            self.log(f"Marked {s.display} for a retake")
+        else:
+            self.log(f"{s.display}: retake {'done' if why == 'retaken' else 'unmarked'}")
+        self.hist("log", "retake" if needed else "retake_cleared", s.key, note or why)
+        if self.current and self.current.key == s.key:
+            self._show_current()
+
+    def toggle_retake(self) -> None:
+        if not self.current:
+            self.bell()
+            return
+        self.set_retake(self.current, self.current.key not in self.retakes)
+
+    # =================================================================== printable reports
+    def report_students(self) -> list[Student]:
+        """Students in the campus shown in the main list (all campuses by default)."""
+        campus = self.campus_filter.get()
+        if campus in ("", "All campuses"):
+            return list(self.students)
+        return [s for s in self.students if (s.campus or "(No campus)") == campus]
+
+    def photo_for_report(self, s: Student) -> str | None:
+        star = self.best.get(s.key)
+        if star and os.path.isfile(star):
+            return star
+        paths = self.student_photo_paths(s)
+        return paths[0] if paths else None
+
+    def _scope_label(self) -> str:
+        campus = self.campus_filter.get()
+        return "" if campus in ("", "All campuses") else f" — {campus}"
+
+    def make_contact_sheets(self) -> None:
+        from .reports import contact_sheets
+        students = self.report_students()
+        if not students:
+            messagebox.showinfo(APP_NAME, "Load a student list first.")
+            return
+        path = filedialog.asksaveasfilename(
+            title="Save contact sheets" + self._scope_label(), defaultextension=".pdf",
+            initialfile=f"contact_sheets_{time.strftime('%Y-%m-%d')}.pdf", filetypes=[("PDF", "*.pdf")])
+        if not path:
+            return
+        photos = {s.key: self.photo_for_report(s) for s in students}
+        self.log(f"Making contact sheets for {len(students)} students…")
+        self.config(cursor="watch")
+
+        def done(pages, error):
+            self.config(cursor="")
+            if error:
+                messagebox.showerror(APP_NAME, f"Couldn't make the contact sheets.\n\n{error}")
+                return
+            self.log(f"Saved contact sheets ({pages} pages) to {os.path.basename(path)}")
+            self.hist("log", "report", None, f"contact sheets, {len(students)} students, {path}")
+            self.last_report = path
+            open_folder(path)
+
+        run_in_background(self, lambda: contact_sheets(students, lambda s: photos.get(s.key), path,
+                                                       school=self._scope_label().strip(" —")), done)
+
+    def make_retake_list(self) -> None:
+        from .reports import retake_list_csv, retake_list_pdf, retake_rows
+        students = self.report_students()
+        if not students:
+            messagebox.showinfo(APP_NAME, "Load a student list first.")
+            return
+        unstarred = messagebox.askyesno(APP_NAME, "Also list students who have photos but no ★ best photo chosen?")
+        rows = retake_rows(students, lambda s: len(self.photos.get(s.key, ())), self.retakes, unstarred, self.best)
+        if not rows:
+            messagebox.showinfo(APP_NAME, "Nobody needs a retake.")
+            return
+        path = filedialog.asksaveasfilename(
+            title="Save retake list" + self._scope_label(), defaultextension=".pdf",
+            initialfile=f"retake_list_{time.strftime('%Y-%m-%d')}.pdf", filetypes=[("PDF", "*.pdf")])
+        if not path:
+            return
+        retake_list_pdf(rows, path, school=self._scope_label().strip(" —"))
+        retake_list_csv(rows, os.path.splitext(path)[0] + ".csv")
+        self.log(f"Saved retake list: {len(rows)} students (PDF and CSV)")
+        self.hist("log", "report", None, f"retake list, {len(rows)} students, {path}")
+        self.last_report = path
+        open_folder(path)
+
+    # =================================================================== updates
+    def check_for_updates(self, quiet: bool = False) -> None:
+        def done(result, error):
+            if result and update.is_newer(result[0], __version__):
+                tag, page = result
+                self.update_label.configure(text=f"⬆ Version {tag.lstrip('v')} is available — click to download")
+                self.update_label.pack(side="right", padx=(0, 12))
+                self.update_label.bind("<Button-1>", lambda e: webbrowser.open(page))
+                self.log(f"A newer version ({tag}) is available on GitHub")
+                if not quiet and messagebox.askyesno(APP_NAME, f"Version {tag.lstrip('v')} is available "
+                                                               f"(you have {__version__}).\n\nOpen the download page?"):
+                    webbrowser.open(page)
+            elif quiet:
+                return
+            elif result:
+                messagebox.showinfo(APP_NAME, f"You have the latest version ({__version__}).")
+            elif messagebox.askyesno(APP_NAME, "Couldn't check for updates automatically (the app's GitHub page is "
+                                               "private or this PC is offline).\n\nOpen the releases page in your "
+                                               "browser? You may need to sign in to GitHub."):
+                webbrowser.open(update.RELEASES_PAGE)
+
+        run_in_background(self, lambda: update.latest_release(), done)
 
     def save_added_list(self) -> None:
         added = [s for s in self.students if s.added]

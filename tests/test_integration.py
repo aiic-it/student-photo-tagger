@@ -659,5 +659,91 @@ class LoadFromTass(_Guard):
         self.assertEqual(len(self.app.students), 39)
 
 
+@unittest.skipUnless(CAN_RUN, "needs pyzmq and a display")
+class RetakesAndReports(_Guard):
+    def setUp(self):
+        from tests.fake_smartshooter import FakeSmartShooter
+        import app.gui as gui
+        self.gui = gui
+        self.tmp = tempfile.mkdtemp()
+        os.environ["APPDATA"] = os.path.join(self.tmp, "appdata")
+        os.makedirs(os.path.join(os.environ["APPDATA"], "StudentPhotoTagger"))
+        self.list_path = os.path.join(self.tmp, "students.csv")
+        with open(self.list_path, "w", encoding="utf-8") as f:
+            f.write("Student Number,First Name,Last Name,Class,Campus\n10234,Nimal,Perera,7B,North\n"
+                    "10235,Amaya,Silva,7B,North\n10236,Kasun,Fernando,8A,South\n")
+        with open(os.path.join(os.environ["APPDATA"], "StudentPhotoTagger", "settings.json"), "w") as f:
+            json.dump({"last_list": self.list_path, "req_port": REQ_PORT, "pub_port": PUB_PORT,
+                       "update_check": False}, f)
+        self.photos_dir = os.path.join(self.tmp, "photos")
+        self.ss = FakeSmartShooter(self.photos_dir, REQ_PORT, PUB_PORT).start()
+        self.addCleanup(lambda: self.ss.stop())
+        self.saved = []
+        self._orig_save = gui.filedialog.asksaveasfilename
+        self._orig_open = gui.open_folder
+        gui.filedialog.asksaveasfilename = lambda **k: os.path.join(self.tmp, k.get("initialfile", "out.pdf"))
+        gui.open_folder = lambda p: self.saved.append(p)
+        self.app = gui.App()
+
+    def tearDown(self):
+        self.gui.filedialog.asksaveasfilename = self._orig_save
+        self.gui.open_folder = self._orig_open
+        self.app._on_close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def wait(self, cond, timeout=15, what="condition"):
+        end = time.time() + timeout
+        while time.time() < end:
+            self.app.update()
+            if cond():
+                return
+            time.sleep(0.05)
+        self.fail(f"Timed out waiting for {what}")
+
+    def test_retake_mark_clears_on_new_photo_and_reports(self):
+        app, ss = self.app, self.ss
+        self.wait(lambda: app.client.connected and ss.options["FilenameExpression"] == "[Z]", what="connected")
+        nimal = app.index.find_by_number("10234")
+        app.select_student(nimal)
+        self.wait(lambda: ss.options["Barcode"] == "10234_Nimal_Perera", what="tag")
+        ss.shoot()
+        self.wait(lambda: len(app.photos.get(nimal.key, {})) == 1, what="photo")
+
+        app.toggle_retake()
+        self.assertIn(nimal.key, app.retakes)
+        self.assertEqual(app.tree.item(nimal.key, "values")[0], "↻")
+        self.assertEqual(app.retake_btn.cget("text"), "Undo retake mark")
+        self.assertIn("marked for retake", app.banner_detail.cget("text"))
+
+        # Retake list: Nimal (marked) and Kasun (no photo); Amaya also has no photo.
+        app.make_retake_list()
+        pdf = self.saved[-1]
+        self.assertTrue(pdf.endswith(".pdf") and os.path.isfile(pdf))
+        with open(os.path.splitext(pdf)[0] + ".csv", encoding="utf-8-sig") as f:
+            text = f.read()
+        self.assertIn("Marked for retake", text)
+        self.assertEqual(text.count("No photo"), 2)
+
+        # Taking a new photo clears the mark.
+        ss.shoot()
+        self.wait(lambda: nimal.key not in app.retakes, what="retake cleared")
+        self.assertEqual(app.tree.item(nimal.key, "values")[0], "✓")
+
+        # Contact sheets for one campus only.
+        app.campus_filter.set("North"); app.refresh_list()
+        self.assertEqual({s.number for s in app.report_students()}, {"10234", "10235"})
+        before = len(self.saved)
+        app.make_contact_sheets()
+        self.wait(lambda: len(self.saved) > before, what="contact sheets")
+        with open(self.saved[-1], "rb") as f:
+            self.assertTrue(f.read(5).startswith(b"%PDF"))
+
+        # Retake marks survive a restart.
+        app.toggle_retake()
+        app._on_close()
+        self.app = self.gui.App()
+        self.assertIn(nimal.key, self.app.retakes)
+
+
 if __name__ == "__main__":
     unittest.main()

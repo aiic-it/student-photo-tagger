@@ -120,6 +120,23 @@ The export folder also gets `export_report.csv` (every copy plus unmatched files
 
 **Reports** in the main window saves the day's photo log and a not-yet-photographed list.
 
+## Retakes and printable reports
+
+- **Mark for retake** (on the banner) flags the selected student, e.g. eyes closed. They show **↻** in the list.
+  The mark clears itself when you take a new photo of them.
+- **Reports → Contact sheets (PDF)**: a page per class (by campus) with each student's ★ best photo (or newest),
+  name and number, an empty box for anyone without a photo, and a "Checked by" line for teachers.
+- **Reports → Retake list (PDF and CSV)**: per class, everyone marked for a retake or with no photo (and,
+  if you choose, anyone without a ★ best photo), with a tick box for each.
+
+Both use the campus chosen in **Show** (or all campuses).
+
+## Updates
+
+The app checks GitHub for a newer version when it starts and shows a link next to the connection status.
+**Help → Check for updates** checks on demand. While the GitHub repository is private, the automatic check can't
+see new versions; **Help → Open the download page** opens it in your browser (sign in to GitHub).
+
 ## History
 
 The app keeps a history database on this PC (`%APPDATA%\StudentPhotoTagger\history.db`) of every photo,
