@@ -55,6 +55,8 @@ class TassClient:
         self.token: str | None = None
         self.token_expiry: dt.datetime | None = None
         self.companies: list[dict] = []
+        self.last_status: int | None = None
+        self.filtered_by_tass = True
         self._ssl = ssl.create_default_context()   # uses the Windows certificate store
 
     # ------------------------------------------------------------------ http
@@ -126,9 +128,11 @@ class TassClient:
         query = "?" + urllib.parse.urlencode(params, safe="$,", quote_via=urllib.parse.quote) if params else ""
         url = f"{self.root}/{urllib.parse.quote(self.company)}/{path}{query}"
         status, payload = self._request("GET", url)
+        self.last_status = status
         if status == 401:                       # token expired early: sign in again once
             self.sign_in()
             status, payload = self._request("GET", url)
+            self.last_status = status
         if status == 403:
             raise TassError("TASS says this API user doesn't have permission for that "
                             f"(company {self.company}). Ask your TASS administrator for Students > Information > Student: Read.")
@@ -139,20 +143,33 @@ class TassClient:
         return payload
 
     # ------------------------------------------------------------------ students
-    def students(self, progress=None) -> list[dict]:
+    def students(self, progress=None, today: dt.date | None = None) -> list[dict]:
+        """Current students only. TASS filters them (dates of entry/leaving) so past and future
+        students are never downloaded; if this TASS version can't filter, the app filters instead."""
+        today = (today or dt.date.today()).isoformat()
+        current = f"(dol eq null or dol ge {today}) and (doe eq null or doe le {today})"
+        self.filtered_by_tass = True
         rows: list[dict] = []
         skip = 0
         while True:
-            page = self.get("students", {"$select": ",".join(STUDENT_FIELDS),
-                                         "$orderby": "surname asc,first_name asc",
-                                         "$top": PAGE, "$skip": skip})
+            params = {"$select": ",".join(STUDENT_FIELDS), "$orderby": "surname asc,first_name asc",
+                      "$top": PAGE, "$skip": skip}
+            if self.filtered_by_tass:
+                params["$filter"] = current
+            try:
+                page = self.get("students", params)
+            except TassError:
+                if not (self.filtered_by_tass and skip == 0 and self.last_status == 400):
+                    raise
+                self.filtered_by_tass = False      # this TASS couldn't apply the filter: load and filter here
+                continue
             if not isinstance(page, list):
                 raise TassError("TASS sent an unexpected reply for the student list.")
             rows.extend(page)
             if progress:
                 progress(len(rows))
             if len(page) < PAGE:
-                return rows
+                return [r for r in rows if is_current(r)]
             skip += PAGE
 
 
@@ -175,19 +192,20 @@ def _parse_date(text):
         return None
 
 
-def is_current(row: dict, today: dt.date | None = None, include_future: bool = False) -> bool:
+def is_current(row: dict, today: dt.date | None = None) -> bool:
+    """Enrolled today: started (or no start date) and not yet left (or no leaving date)."""
     today = today or dt.date.today()
     left = _parse_date(row.get("dol"))
     if left and left < today:
         return False
     entry = _parse_date(row.get("doe"))
-    if entry and entry > today and not include_future:
+    if entry and entry > today:
         return False
     return True
 
 
 def to_students(rows: list[dict], class_source: str = "Tutor group", preferred_names: bool = True,
-                include_future: bool = False, campuses: list[str] | None = None,
+                campuses: list[str] | None = None,
                 years: list[str] | None = None, today: dt.date | None = None) -> list[Student]:
     field = CLASS_SOURCES.get(class_source, "pctut_grp")
     wanted_campus = {c.strip().lower() for c in campuses or [] if c.strip()}
@@ -195,7 +213,7 @@ def to_students(rows: list[dict], class_source: str = "Tutor group", preferred_n
     out: list[Student] = []
     for r in rows:
         code = str(r.get("stud_code") or "").strip()
-        if not code or not is_current(r, today, include_future):
+        if not code or not is_current(r, today):
             continue
         campus = str(r.get("campus_code") or "").strip()
         year = "" if r.get("year_grp") is None else str(r.get("year_grp")).strip()

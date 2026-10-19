@@ -36,8 +36,8 @@ and gives you its **ClientKey** and **ClientSecret**. Don't email or chat these;
    ClientKey and ClientSecret, then **Test connection**. It fills in the company code and lists the campus codes.
 2. Choose where the **Class** column comes from (Tutor group, Form class, Year group or House), whether to use
    **preferred names**, and optionally limit to some **campuses** or **year groups**.
-3. **Save and load students**. Only current students are loaded (not those who have left; future
-   enrolments only if ticked).
+3. **Save and load students**. Only **current** students are loaded: TASS itself leaves out students who have
+   left or haven't started yet, so their details never reach this PC.
 
 Use **TASS → Load students from TASS** on the morning of picture day to pick up new enrolments. The last list
 from TASS is kept on the PC, so the app still opens with it if the network is down.

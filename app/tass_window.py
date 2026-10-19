@@ -44,7 +44,6 @@ def tass_settings(settings: dict) -> dict:
         "secret": unprotect(settings.get("tass_secret", "")),
         "class_source": settings.get("tass_class_source", "Tutor group"),
         "preferred": settings.get("tass_preferred", True),
-        "future": settings.get("tass_future", False),
         "campuses": settings.get("tass_campuses", ""),
         "years": settings.get("tass_years", ""),
     }
@@ -63,8 +62,7 @@ def fetch_students(t: dict, progress=None):
     client = TassClient(t["url"], t["key"], t["secret"], t["company"])
     client.sign_in()
     rows = client.students(progress)
-    students = to_students(rows, t["class_source"], t["preferred"], t["future"],
-                           _split(t["campuses"]), _split(t["years"]))
+    students = to_students(rows, t["class_source"], t["preferred"], _split(t["campuses"]), _split(t["years"]))
     return client, rows, students
 
 
@@ -93,8 +91,8 @@ def load_from_tass(app) -> None:
             return
         client, rows, students = result
         if not students:
-            messagebox.showwarning(APP_NAME, f"TASS returned {len(rows)} students, but none matched your "
-                                             "filters (current students, campuses, year groups).")
+            messagebox.showwarning(APP_NAME, f"TASS returned {len(rows)} current students, but none matched your "
+                                             "campus / year group settings.")
             return
         path = cache_path(os.path.dirname(app.settings_file))
         write_student_list(students, path)
@@ -131,7 +129,6 @@ class TassSettingsDialog(tk.Toplevel):
         self.company = tk.StringVar(value=t["company"])
         self.class_source = tk.StringVar(value=t["class_source"] if t["class_source"] in CLASS_SOURCES else "Tutor group")
         self.preferred = tk.BooleanVar(value=t["preferred"])
-        self.future = tk.BooleanVar(value=t["future"])
         self.campuses = tk.StringVar(value=t["campuses"])
         self.years = tk.StringVar(value=t["years"])
 
@@ -158,7 +155,8 @@ class TassSettingsDialog(tk.Toplevel):
         add("Only these year groups", ttk.Entry(frm, textvariable=self.years, width=40), "e.g. 7, 8; blank = all")
         ttk.Checkbutton(frm, text="Use preferred names", variable=self.preferred).grid(row=row, column=1, sticky="w")
         row += 1
-        ttk.Checkbutton(frm, text="Include future enrolments", variable=self.future).grid(row=row, column=1, sticky="w")
+        ttk.Label(frm, text="Only current students are loaded: not those who have left or haven't started yet.",
+                  foreground="#555555").grid(row=row, column=0, columnspan=3, sticky="w", pady=(6, 0))
         row += 1
         self.status = ttk.Label(frm, text="", wraplength=520, justify="left")
         self.status.grid(row=row, column=0, columnspan=3, sticky="w", pady=(10, 0))
@@ -176,7 +174,7 @@ class TassSettingsDialog(tk.Toplevel):
     def _values(self) -> dict:
         return {"url": self.url.get().strip(), "key": self.key.get().strip(), "secret": self.secret.get(),
                 "company": self.company.get().split(" ")[0].strip(), "class_source": self.class_source.get(),
-                "preferred": self.preferred.get(), "future": self.future.get(),
+                "preferred": self.preferred.get(),
                 "campuses": self.campuses.get().strip(), "years": self.years.get().strip()}
 
     def test(self) -> None:
@@ -200,9 +198,8 @@ class TassSettingsDialog(tk.Toplevel):
                 self.company.set(client.company)
             campuses = sorted({str(r.get("campus_code")) for r in rows if r.get("campus_code")})
             self.status.configure(foreground="#1E5E2F", text=(
-                f"Connected. Company {client.company}: {len(rows)} students in TASS, "
-                f"{len(students)} match your settings (current"
-                + (" and future" if t["future"] else "") + ")."
+                f"Connected. Company {client.company}: {len(rows)} current students in TASS, "
+                f"{len(students)} match your settings."
                 + (f"\nCampus codes in TASS: {', '.join(campuses)}" if campuses else "")))
 
         run_in_background(self, lambda: fetch_students(t), done)
@@ -215,7 +212,7 @@ class TassSettingsDialog(tk.Toplevel):
         s = self.app.settings
         s.update({"tass_url": t["url"], "tass_company": t["company"], "tass_key": protect(t["key"]),
                   "tass_secret": protect(t["secret"]), "tass_class_source": t["class_source"],
-                  "tass_preferred": t["preferred"], "tass_future": t["future"],
+                  "tass_preferred": t["preferred"],
                   "tass_campuses": t["campuses"], "tass_years": t["years"]})
         self.app.save_settings()
         self.app.log("Saved TASS connection settings")

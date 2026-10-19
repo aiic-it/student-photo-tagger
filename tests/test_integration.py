@@ -622,7 +622,7 @@ class LoadFromTass(_Guard):
         dlg.test()
         self.wait(lambda: dlg.status.cget("text").startswith("Connected"), what="connected")
         self.assertEqual(dlg.company.get(), "10")
-        self.assertIn("40 students in TASS, 39 match", dlg.status.cget("text"))
+        self.assertIn("39 current students in TASS, 39 match", dlg.status.cget("text"))
         self.assertIn("NTH, STH", dlg.status.cget("text"))
         dlg.campuses.set("NTH")
         dlg.save(load=True)

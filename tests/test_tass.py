@@ -83,10 +83,27 @@ class Tass(unittest.TestCase):
         self.assertEqual(s[1].group, "")
         self.assertEqual(to_students(rows, preferred_names=False, today=today)[0].first, "Andrea")
         self.assertEqual(to_students(rows, class_source="Year group", today=today)[0].group, "7")
-        self.assertEqual([x.number for x in to_students(rows, include_future=True, today=today)], ["0001", "0003", "0004"])
         self.assertEqual([x.number for x in to_students(rows, campuses=["sth"], today=today)], ["0004"])
-        self.assertEqual([x.number for x in to_students(rows, years=["7"], include_future=True, today=today)],
-                         ["0001", "0003"])
+        self.assertEqual([x.number for x in to_students(rows, years=["7"], today=today)], ["0001"])
+
+    def test_only_current_students_leave_tass(self):
+        rows = self.fake.students
+        rows[0]["dol"] = "2020-12-31"                    # left
+        rows[1]["doe"] = "2099-01-28"                    # hasn't started
+        rows[2]["dol"] = "2099-12-31"                    # leaving later: still current
+        got = self.client().students()
+        self.assertEqual(len(got), 1201)
+        self.assertEqual(self.fake.rows_sent, 1201)      # past/future students were never sent
+        self.assertNotIn(rows[0]["stud_code"], {r["stud_code"] for r in got})
+        self.assertIn("%24filter=", "".join(self.fake.calls).replace("$", "%24"))
+
+    def test_falls_back_when_tass_cannot_filter(self):
+        self.fake.students[0]["dol"] = "2020-12-31"
+        self.fake.reject_filter = True
+        c = self.client()
+        got = c.students()
+        self.assertFalse(c.filtered_by_tass)
+        self.assertEqual(len(got), 1202)                 # still current students only
 
     def test_secret_round_trip(self):
         stored = protect("s3cret!")

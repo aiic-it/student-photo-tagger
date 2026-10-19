@@ -2,6 +2,7 @@
 POST /api/users -> JWT; GET /api/{cmpy}/students with $select/$top (max 500)/$skip and Bearer auth."""
 import datetime as dt
 import json
+import re
 import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -27,6 +28,8 @@ class FakeTass:
         self.students = students if students is not None else make_students()
         self.tokens: set[str] = set()
         self.expire_next = False          # make the next authorised call return 401 once
+        self.reject_filter = False        # behave like a TASS that can't apply this $filter (HTTP 400)
+        self.rows_sent = 0
         self.calls: list[str] = []
         fake = self
 
@@ -75,8 +78,20 @@ class FakeTass:
                 if top > 500:
                     return self._send(400, {"errors": {"$top": ["Maximum is 500."]}})
                 skip = int(q.get("$skip", ["0"])[0])
+                rows = fake.students
+                if "$filter" in q:
+                    if fake.reject_filter:
+                        return self._send(400, {"errors": {"$filter": ["The query specified in the URI is not valid."]}})
+                    m = re.fullmatch(r"\(dol eq null or dol ge (\d{4}-\d\d-\d\d)\) and "
+                                     r"\(doe eq null or doe le (\d{4}-\d\d-\d\d)\)", q["$filter"][0])
+                    if not m:
+                        return self._send(400, {"errors": {"$filter": ["Unsupported filter in fake."]}})
+                    day = m.group(1)
+                    rows = [r for r in rows if (not r.get("dol") or r["dol"][:10] >= day)
+                            and (not r.get("doe") or r["doe"][:10] <= day)]
                 fields = q.get("$select", [""])[0].split(",") if q.get("$select") else None
-                rows = fake.students[skip:skip + top]
+                rows = rows[skip:skip + top]
+                fake.rows_sent += len(rows)
                 if fields:
                     rows = [{k: r.get(k) for k in fields} for r in rows]
                 self._send(200, rows)
