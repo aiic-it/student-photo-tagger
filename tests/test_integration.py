@@ -40,7 +40,8 @@ def setUpModule():
     import app.gui as gui
     for n in ("showinfo", "showerror", "showwarning", "askyesno", "askokcancel"):
         _saved[n] = getattr(messagebox, n)
-        setattr(messagebox, n, lambda *a, _n=n, **k: print(f"[dialog {_n}] {a[1] if len(a) > 1 else ''}") or False)
+        setattr(messagebox, n, lambda *a, _n=n, **k: print(
+            f"[dialog {_n}] {a[1] if len(a) > 1 else ''}".encode("ascii", "replace").decode()) or False)
     _saved["report"] = gui.App.report_callback_exception
 
     def record(self, exc, val, tb):

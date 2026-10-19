@@ -133,9 +133,9 @@ Both use the campus chosen in **Show** (or all campuses).
 
 ## Updates
 
-The app checks GitHub for a newer version when it starts and shows a link next to the connection status.
-**Help → Check for updates** checks on demand. While the GitHub repository is private, the automatic check can't
-see new versions; **Help → Open the download page** opens it in your browser (sign in to GitHub).
+The app checks GitHub for a newer version when it starts and shows a link next to the connection status
+("⬆ Version … is available"). **Help → Check for updates** checks on demand, and **Help → Open the download
+page** opens the Releases page.
 
 ## History
 

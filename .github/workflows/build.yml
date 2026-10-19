@@ -50,6 +50,7 @@ jobs:
           exit $code
         env:
           REQUIRE_INTEGRATION: "1"
+          PYTHONIOENCODING: "utf-8"
 
       - name: Build StudentPhotoTagger.exe
         run: pyinstaller --noconfirm --onefile --windowed --name StudentPhotoTagger run.py
