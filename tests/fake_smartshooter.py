@@ -68,6 +68,9 @@ class FakeSmartShooter:
                 if changed.get("Barcode") != self.options.get("Barcode") and self.options.get("ResetSequenceNumOnEdit"):
                     self.seq = 0
                 self.options.update(changed)
+                if changed.get("DownloadPath"):
+                    self.download_path = changed["DownloadPath"]
+                    os.makedirs(self.download_path, exist_ok=True)
                 rep.send_string(json.dumps(reply))
                 self.publish("OptionsUpdated", dict(self.options))
                 continue

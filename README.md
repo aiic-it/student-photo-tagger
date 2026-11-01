@@ -25,6 +25,20 @@ This happens because the app isn't digitally signed.
    student number, first name and last name. Class and Campus columns are used if present.
    See `sample_students.csv` for the layout. The app remembers the list next time.
 
+## Staff photos
+
+Click **Students ▾** at the top left and choose **Staff photos**. The app restarts in staff mode
+("Staff Photo Tagger") with its own staff list, history, ★ stars and retakes, kept separately from students.
+
+- The first time, it asks for a **folder for staff photos**; the app then switches Smart Shooter to that folder in
+  staff mode and back to the student folder in student mode, so the two never mix.
+- **TASS → Load staff from TASS** reads current staff (employment start/termination dates) from TASS's employee
+  list. The TASS API user needs **Employee/HR > Information > Employee: Read** as well. The connection details are
+  shared with student mode; the **Position** column can come from position title, main activity or employee status,
+  and you can limit it to some positions (e.g. Teacher).
+- A CSV of staff works too (columns like Staff code / Employee code, First name, Surname, Position).
+- Everything else works the same: naming in Smart Shooter, export by name or code, contact sheets, retakes.
+
 ## Loading students straight from TASS
 
 Instead of a CSV, the app can read the student list from TASS (TASS REST API).

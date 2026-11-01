@@ -8,7 +8,8 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from .core import write_student_list
-from .tass import CLASS_SOURCES, TassClient, TassError, cache_path, protect, to_students, unprotect
+from .tass import (CLASS_SOURCES, STAFF_GROUP_SOURCES, TassClient, TassError, cache_path, protect, to_staff,
+                   to_students, unprotect)
 
 APP_NAME = "Student Photo Tagger"
 
@@ -58,12 +59,20 @@ def _split(text: str) -> list[str]:
     return [p.strip() for p in (text or "").replace(";", ",").split(",") if p.strip()]
 
 
-def fetch_students(t: dict, progress=None):
+def fetch_students(t: dict, progress=None, staff: bool = False):
     client = TassClient(t["url"], t["key"], t["secret"], t["company"])
     client.sign_in()
-    rows = client.students(progress)
-    students = to_students(rows, t["class_source"], t["preferred"], _split(t["campuses"]), _split(t["years"]))
-    return client, rows, students
+    if staff:
+        rows = client.employees(progress)
+        people = to_staff(rows, t["class_source"], t["preferred"], _split(t["campuses"]))
+    else:
+        rows = client.students(progress)
+        people = to_students(rows, t["class_source"], t["preferred"], _split(t["campuses"]), _split(t["years"]))
+    return client, rows, people
+
+
+def _is_staff(app) -> bool:
+    return getattr(app, "mode", "students") == "staff"
 
 
 def load_from_tass(app) -> None:
@@ -75,11 +84,13 @@ def load_from_tass(app) -> None:
         return
     app._tass_busy = True
     t = tass_settings(app.settings)
-    app.log("Loading students from TASS…")
+    staff = _is_staff(app)
+    who = "staff" if staff else "students"
+    app.log(f"Loading {who} from TASS…")
     app.config(cursor="watch")
 
     def work():
-        return fetch_students(t)
+        return fetch_students(t, staff=staff)
 
     def done(result, error):
         app._tass_busy = False
@@ -87,12 +98,12 @@ def load_from_tass(app) -> None:
         if error:
             app.log(f"TASS: {error}", warn=True)
             app.hist("log", "tass_error", None, str(error))
-            messagebox.showerror(APP_NAME, f"Couldn't load students from TASS.\n\n{error}")
+            messagebox.showerror(APP_NAME, f"Couldn't load {who} from TASS.\n\n{error}")
             return
         client, rows, students = result
         if not students:
-            messagebox.showwarning(APP_NAME, f"TASS returned {len(rows)} current students, but none matched your "
-                                             "campus / year group settings.")
+            messagebox.showwarning(APP_NAME, f"TASS returned {len(rows)} current {who}, but none matched your "
+                                             "filter settings.")
             return
         path = cache_path(os.path.dirname(app.settings_file))
         write_student_list(students, path)
@@ -100,9 +111,9 @@ def load_from_tass(app) -> None:
         app.settings["list_source"] = "tass"
         app.save_settings()
         flagged = sum(1 for s in students if s.privacy)
-        app.log(f"Loaded {len(students)} students from TASS (company {client.company})"
+        app.log(f"Loaded {len(students)} {who} from TASS (company {client.company})"
                 + (f" — {flagged} with the privacy flag set" if flagged else ""))
-        app.hist("log", "tass_loaded", None, f"{len(students)} of {len(rows)} students, company {client.company}")
+        app.hist("log", "tass_loaded", None, f"{len(students)} of {len(rows)} {who}, company {client.company}")
 
     run_in_background(app, work, done)
 
@@ -116,18 +127,24 @@ class TassSettingsDialog(tk.Toplevel):
         self.transient(app)
         self.resizable(False, False)
         t = tass_settings(app.settings)
+        self.staff = staff = _is_staff(app)
+        sources = STAFF_GROUP_SOURCES if staff else CLASS_SOURCES
+        default_source = "Position title" if staff else "Tutor group"
+        who = "staff" if staff else "students"
         frm = ttk.Frame(self, padding=14)
         frm.pack(fill="both", expand=True)
         frm.columnconfigure(1, weight=1)
-        ttk.Label(frm, text="Read the student list straight from TASS. Your TASS administrator creates an API user\n"
-                            "with Students > Information > Student: Read and gives you its ClientKey and ClientSecret.",
+        permission = ("Employee/HR > Information > Employee: Read" if staff
+                      else "Students > Information > Student: Read")
+        ttk.Label(frm, text=f"Read the {who} list straight from TASS. Your TASS administrator creates an API user\n"
+                            f"with {permission} and gives you its ClientKey and ClientSecret.",
                   foreground="#555555").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
 
         self.url = tk.StringVar(value=t["url"])
         self.key = tk.StringVar(value=t["key"])
         self.secret = tk.StringVar(value=t["secret"])
         self.company = tk.StringVar(value=t["company"])
-        self.class_source = tk.StringVar(value=t["class_source"] if t["class_source"] in CLASS_SOURCES else "Tutor group")
+        self.class_source = tk.StringVar(value=t["class_source"] if t["class_source"] in sources else default_source)
         self.preferred = tk.BooleanVar(value=t["preferred"])
         self.campuses = tk.StringVar(value=t["campuses"])
         self.years = tk.StringVar(value=t["years"])
@@ -149,13 +166,17 @@ class TassSettingsDialog(tk.Toplevel):
             "saved encrypted on this PC")
         self.company_box = add("Company code", ttk.Combobox(frm, textvariable=self.company, width=37),
                                "filled in by Test connection")
-        add("Class column from", ttk.Combobox(frm, textvariable=self.class_source, values=list(CLASS_SOURCES),
-                                              state="readonly", width=37))
-        add("Only these campuses", ttk.Entry(frm, textvariable=self.campuses, width=40), "codes, comma separated; blank = all")
-        add("Only these year groups", ttk.Entry(frm, textvariable=self.years, width=40), "e.g. 7, 8; blank = all")
+        add("Position column from" if staff else "Class column from",
+            ttk.Combobox(frm, textvariable=self.class_source, values=list(sources), state="readonly", width=37))
+        if staff:
+            add("Only these positions", ttk.Entry(frm, textvariable=self.campuses, width=40),
+                "e.g. Teacher; blank = all staff")
+        else:
+            add("Only these campuses", ttk.Entry(frm, textvariable=self.campuses, width=40), "codes, comma separated; blank = all")
+            add("Only these year groups", ttk.Entry(frm, textvariable=self.years, width=40), "e.g. 7, 8; blank = all")
         ttk.Checkbutton(frm, text="Use preferred names", variable=self.preferred).grid(row=row, column=1, sticky="w")
         row += 1
-        ttk.Label(frm, text="Only current students are loaded: not those who have left or haven't started yet.",
+        ttk.Label(frm, text=f"Only current {who} are loaded: not those who have left or haven't started yet.",
                   foreground="#555555").grid(row=row, column=0, columnspan=3, sticky="w", pady=(6, 0))
         row += 1
         self.status = ttk.Label(frm, text="", wraplength=520, justify="left")
@@ -166,7 +187,7 @@ class TassSettingsDialog(tk.Toplevel):
         self.test_btn = ttk.Button(btns, text="Test connection", command=self.test)
         self.test_btn.pack(side="left")
         ttk.Button(btns, text="Cancel", command=self.destroy).pack(side="right")
-        ttk.Button(btns, text="Save and load students", command=lambda: self.save(load=True)).pack(side="right", padx=(0, 6))
+        ttk.Button(btns, text=f"Save and load {who}", command=lambda: self.save(load=True)).pack(side="right", padx=(0, 6))
         ttk.Button(btns, text="Save", command=lambda: self.save(load=False)).pack(side="right", padx=(0, 6))
         self.bind("<Escape>", lambda e: self.destroy())
         self.test_result = None
@@ -196,13 +217,17 @@ class TassSettingsDialog(tk.Toplevel):
             self.company_box.configure(values=names)
             if client.company:
                 self.company.set(client.company)
-            campuses = sorted({str(r.get("campus_code")) for r in rows if r.get("campus_code")})
+            key = "position_title" if self.staff else "campus_code"
+            campuses = sorted({str(r.get(key)) for r in rows if r.get(key)})
+            if len(campuses) > 15:
+                campuses = campuses[:15] + ["…"]
             self.status.configure(foreground="#1E5E2F", text=(
-                f"Connected. Company {client.company}: {len(rows)} current students in TASS, "
+                f"Connected. Company {client.company}: {len(rows)} current {'staff' if self.staff else 'students'} in TASS, "
                 f"{len(students)} match your settings."
-                + (f"\nCampus codes in TASS: {', '.join(campuses)}" if campuses else "")))
+                + (f"\n{'Position titles' if self.staff else 'Campus codes'} in TASS: {', '.join(campuses)}"
+                   if campuses else "")))
 
-        run_in_background(self, lambda: fetch_students(t), done)
+        run_in_background(self, lambda: fetch_students(t, staff=self.staff), done)
 
     def save(self, load: bool) -> None:
         t = self._values()

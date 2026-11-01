@@ -23,9 +23,18 @@ def make_students(n=1203):
     return rows
 
 
+def make_employees(n=30):
+    return [{"emp_code": f"E{100 + i}", "title": "Ms", "first_name": f"Staff{i}", "preferred_name": None,
+             "surname": f"Teacher{i:03d}", "position_title": ["Teacher", "Head of Year", "Admin Officer"][i % 3],
+             "position_text": "", "main_activity": "Teaching" if i % 3 != 2 else "Administration",
+             "status_text": "Active", "start_date": "2019-01-28", "term_date": None, "school_email": None}
+            for i in range(n)]
+
+
 class FakeTass:
-    def __init__(self, students=None):
+    def __init__(self, students=None, employees=None):
         self.students = students if students is not None else make_students()
+        self.employees = employees if employees is not None else make_employees()
         self.tokens: set[str] = set()
         self.expire_next = False          # make the next authorised call return 401 once
         self.reject_filter = False        # behave like a TASS that can't apply this $filter (HTTP 400)
@@ -69,8 +78,9 @@ class FakeTass:
                     fake.tokens.discard(auth[7:])
                     return self._send(401, {"message": "Unauthorized"})
                 parts = parsed.path.strip("/").split("/")
-                if len(parts) != 3 or parts[0] != "api" or parts[2] != "students":
+                if len(parts) != 3 or parts[0] != "api" or parts[2] not in ("students", "employees"):
                     return self._send(404, {"message": "Not Found"})
+                start_f, end_f = ("doe", "dol") if parts[2] == "students" else ("start_date", "term_date")
                 if parts[1] != COMPANY:
                     return self._send(403, {"message": "Forbidden"})
                 q = urllib.parse.parse_qs(parsed.query)
@@ -78,17 +88,17 @@ class FakeTass:
                 if top > 500:
                     return self._send(400, {"errors": {"$top": ["Maximum is 500."]}})
                 skip = int(q.get("$skip", ["0"])[0])
-                rows = fake.students
+                rows = fake.students if parts[2] == "students" else fake.employees
                 if "$filter" in q:
                     if fake.reject_filter:
                         return self._send(400, {"errors": {"$filter": ["The query specified in the URI is not valid."]}})
-                    m = re.fullmatch(r"\(dol eq null or dol ge (\d{4}-\d\d-\d\d)\) and "
-                                     r"\(doe eq null or doe le (\d{4}-\d\d-\d\d)\)", q["$filter"][0])
+                    m = re.fullmatch(rf"\({end_f} eq null or {end_f} ge (\d{{4}}-\d\d-\d\d)\) and "
+                                     rf"\({start_f} eq null or {start_f} le (\d{{4}}-\d\d-\d\d)\)", q["$filter"][0])
                     if not m:
                         return self._send(400, {"errors": {"$filter": ["Unsupported filter in fake."]}})
                     day = m.group(1)
-                    rows = [r for r in rows if (not r.get("dol") or r["dol"][:10] >= day)
-                            and (not r.get("doe") or r["doe"][:10] <= day)]
+                    rows = [r for r in rows if (not r.get(end_f) or r[end_f][:10] >= day)
+                            and (not r.get(start_f) or r[start_f][:10] <= day)]
                 fields = q.get("$select", [""])[0].split(",") if q.get("$select") else None
                 rows = rows[skip:skip + top]
                 fake.rows_sent += len(rows)

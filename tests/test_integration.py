@@ -746,5 +746,85 @@ class RetakesAndReports(_Guard):
         self.assertIn(nimal.key, self.app.retakes)
 
 
+@unittest.skipUnless(CAN_RUN, "needs pyzmq and a display")
+class StaffMode(_Guard):
+    def setUp(self):
+        from tests.fake_smartshooter import FakeSmartShooter
+        from tests.fake_tass import FakeTass, KEY, SECRET
+        from app.tass import protect
+        import app.gui as gui
+        self.gui = gui
+        self.tmp = tempfile.mkdtemp()
+        os.environ["APPDATA"] = os.path.join(self.tmp, "appdata")
+        os.makedirs(os.path.join(os.environ["APPDATA"], "StudentPhotoTagger"))
+        self.tass = FakeTass().start()
+        self.addCleanup(self.tass.stop)
+        self.list_path = os.path.join(self.tmp, "students.csv")
+        with open(self.list_path, "w", encoding="utf-8") as f:
+            f.write("Student Number,First Name,Last Name,Class\n10234,Nimal,Perera,7B\n")
+        with open(os.path.join(os.environ["APPDATA"], "StudentPhotoTagger", "settings.json"), "w") as f:
+            json.dump({"last_list": self.list_path, "req_port": REQ_PORT, "pub_port": PUB_PORT,
+                       "update_check": False, "tass_url": self.tass.url, "tass_key": protect(KEY),
+                       "tass_secret": protect(SECRET)}, f)
+        self.student_dir = os.path.join(self.tmp, "student photos")
+        self.staff_dir = os.path.join(self.tmp, "staff photos")
+        os.makedirs(self.staff_dir)
+        self.ss = FakeSmartShooter(self.student_dir, REQ_PORT, PUB_PORT).start()
+        self.addCleanup(lambda: self.ss.stop())
+        self._orig_dir = gui.filedialog.askdirectory
+        gui.filedialog.askdirectory = lambda **k: self.staff_dir
+        self.app = gui.App()
+
+    def tearDown(self):
+        self.gui.filedialog.askdirectory = self._orig_dir
+        try:
+            self.app._on_close()
+        except Exception:
+            pass
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def wait(self, cond, timeout=15, what="condition"):
+        end = time.time() + timeout
+        while time.time() < end:
+            self.app.update()
+            if cond():
+                return
+            time.sleep(0.05)
+        self.fail(f"Timed out waiting for {what}")
+
+    def test_switch_to_staff_load_from_tass_and_back(self):
+        app, ss = self.app, self.ss
+        self.assertEqual(app.mode, "students")
+        self.wait(lambda: app.client.connected and app.download_path == self.student_dir, what="student folder")
+        app.switch_mode("staff")
+        self.assertEqual(app.switch_to, "staff")
+
+        self.app = app = self.gui.App()                       # what main() does next
+        self.assertEqual(app.mode, "staff")
+        self.assertTrue(app.title().startswith("Staff Photo Tagger"))
+        self.assertEqual(app.students, [])                     # staff have their own list
+        self.assertEqual(app.tree.heading("group", "text").split(" ")[0], "Position")
+        self.wait(lambda: ss.options["DownloadPath"] == self.staff_dir, what="Smart Shooter pointed at staff folder")
+
+        from app.tass_window import load_from_tass
+        load_from_tass(app)                                    # TASS sign-in shared from student mode
+        self.wait(lambda: len(app.students) == 30, what="staff loaded from TASS")
+        emp = app.index.find_by_number("E100")
+        self.assertEqual((emp.first, emp.group), ("Staff0", "Teacher"))
+        app.select_student(emp)
+        self.wait(lambda: ss.options["Barcode"] == "E100_Staff0_Teacher000", what="staff tag")
+        ss.shoot()
+        self.assertTrue(os.path.isfile(os.path.join(self.staff_dir, "E100_Staff0_Teacher000.jpg")))
+        self.wait(lambda: len(app.photos.get(emp.key, {})) == 1, what="staff photo counted")
+        self.assertEqual(app.history.student_rows("Staff0")[0]["photos"], 1)
+
+        app.switch_mode("students")
+        self.app = app = self.gui.App()
+        self.assertEqual(app.mode, "students")
+        self.assertEqual([s.number for s in app.students], ["10234"])
+        self.assertEqual(app.history.student_rows("Staff0"), [])  # separate history
+        self.wait(lambda: ss.options["DownloadPath"] == self.student_dir, what="back to student folder")
+
+
 if __name__ == "__main__":
     unittest.main()

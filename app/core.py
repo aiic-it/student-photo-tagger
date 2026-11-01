@@ -20,13 +20,15 @@ IMAGE_EXTS = {
 
 HEADER_ALIASES = {
     "number": ["student number", "student no", "student id", "studentid", "student code",
-               "stud code", "id number", "admission number", "admission no", "id", "number",
-               "code"],
+               "stud code", "id number", "admission number", "admission no",
+               "employee code", "employee id", "employee number", "emp code", "emp_code", "staff code",
+               "staff id", "staff number", "id", "number", "code"],
     "first": ["first name", "firstname", "first", "given name", "given names", "forename",
               "preferred name", "preferred"],
     "last": ["last name", "lastname", "last", "surname", "family name"],
     "group": ["class", "year", "year level", "form", "homeroom", "roll class", "tutor group",
-              "house", "grade", "pc", "pastoral care"],
+              "house", "grade", "pc", "pastoral care",
+              "position", "position title", "position_title", "department", "faculty", "role", "main activity"],
     "campus": ["campus", "campus name", "campus code", "campus_code", "site", "location", "school campus"],
     "privacy": ["privacy", "privacy flag", "privacy_flg", "photo privacy", "no photo"],
 }

@@ -44,11 +44,55 @@ COLOURS = {
 }
 
 
-def settings_path() -> str:
+MODES = {
+    "students": {"title": "Student Photo Tagger", "person": "student", "people": "students",
+                 "Person": "Student", "group": "Class", "number": "Student number", "switch": "Students"},
+    "staff":    {"title": "Staff Photo Tagger", "person": "staff member", "people": "staff",
+                 "Person": "Staff member", "group": "Position", "number": "Staff code", "switch": "Staff"},
+}
+# Settings shared by both modes (one Smart Shooter, one TASS connection).
+SHARED_KEYS = ("host", "req_port", "pub_port", "tass_url", "tass_company", "tass_key", "tass_secret",
+               "tass_preferred", "tag_number", "tag_name", "shot_number", "update_check")
+
+
+def app_folder() -> str:
     base = os.environ.get("APPDATA") or os.path.expanduser("~")
     folder = os.path.join(base, "StudentPhotoTagger")
     os.makedirs(folder, exist_ok=True)
+    return folder
+
+
+def settings_path(mode: str = "students") -> str:
+    """Students keep their files in the StudentPhotoTagger folder; staff in its Staff subfolder
+    (separate lists, history, stars and retakes)."""
+    folder = app_folder() if mode != "staff" else os.path.join(app_folder(), "Staff")
+    os.makedirs(folder, exist_ok=True)
     return os.path.join(folder, "settings.json")
+
+
+def read_mode() -> str:
+    try:
+        with open(os.path.join(app_folder(), "mode.txt"), encoding="utf-8") as f:
+            mode = f.read().strip()
+    except OSError:
+        return "students"
+    return mode if mode in MODES else "students"
+
+
+def write_mode(mode: str) -> None:
+    try:
+        with open(os.path.join(app_folder(), "mode.txt"), "w", encoding="utf-8") as f:
+            f.write(mode)
+    except OSError:
+        pass
+
+
+def _read_json(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
 
 
 def open_folder(path: str) -> None:
@@ -64,12 +108,15 @@ def open_folder(path: str) -> None:
 
 
 class App(tk.Tk):
-    def __init__(self):
+    def __init__(self, mode: str | None = None):
         super().__init__()
-        self.title(f"{APP_NAME} {__version__}")
+        self.mode = mode if mode in MODES else read_mode()
+        self.terms = MODES[self.mode]
+        self.switch_to: str | None = None
+        self.title(f"{self.terms['title']} {__version__}")
         self.geometry("1050x700")
         self.minsize(820, 560)
-        self.settings_file = settings_path()
+        self.settings_file = settings_path(self.mode)
         self.settings = self._load_settings()
 
         self.students: list[Student] = []
@@ -92,7 +139,7 @@ class App(tk.Tk):
 
         self.history: History | None = None
         try:
-            self.history = History(os.path.join(os.path.dirname(settings_path()), "history.db"), __version__)
+            self.history = History(os.path.join(os.path.dirname(self.settings_file), "history.db"), __version__)
             self.history.start_session(photo_folder=self.download_path)
         except Exception as e:  # history is a bonus; never stop the app
             self.history = None
@@ -120,7 +167,7 @@ class App(tk.Tk):
         import traceback
         detail = "".join(traceback.format_exception(exc, val, tb))
         try:
-            with open(os.path.join(os.path.dirname(settings_path()), "error_log.txt"), "a", encoding="utf-8") as f:
+            with open(os.path.join(app_folder(), "error_log.txt"), "a", encoding="utf-8") as f:
                 f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + detail + "\n")
         except OSError:
             pass
@@ -141,18 +188,48 @@ class App(tk.Tk):
 
     # =================================================================== settings
     def _load_settings(self) -> dict:
-        try:
-            with open(settings_path(), encoding="utf-8") as f:
-                return json.load(f)
-        except (OSError, ValueError):
-            return {}
+        settings = _read_json(self.settings_file)
+        # Shared settings (Smart Shooter, TASS sign-in, file naming) come from the other mode's file.
+        other = _read_json(settings_path("students" if self.mode == "staff" else "staff"))
+        for k in SHARED_KEYS:
+            if k in other and (k not in settings or other.get("_saved_at", 0) > settings.get("_saved_at", 0)):
+                settings[k] = other[k]
+        return settings
 
     def save_settings(self) -> None:
+        self.settings["_saved_at"] = time.time()
         try:
-            with open(settings_path(), "w", encoding="utf-8") as f:
+            with open(self.settings_file, "w", encoding="utf-8") as f:
                 json.dump(self.settings, f, indent=2)
         except OSError:
             pass
+
+    # =================================================================== students / staff
+    def switch_mode(self, mode: str) -> None:
+        if mode == self.mode or mode not in MODES:
+            return
+        # Keep each mode's photos in their own Smart Shooter folder.
+        if self.download_path and not self.settings.get("photo_folder"):
+            self.settings["photo_folder"] = self.download_path
+        self.save_settings()
+        target_file = settings_path(mode)
+        target = _read_json(target_file)
+        if not target.get("photo_folder"):
+            start = self.download_path or os.path.expanduser("~")
+            folder = filedialog.askdirectory(
+                title=f"Choose a folder for {MODES[mode]['people']} photos (Cancel = same folder as now)",
+                initialdir=start)
+            if folder:
+                target["photo_folder"] = os.path.normpath(folder)
+                try:
+                    with open(target_file, "w", encoding="utf-8") as f:
+                        json.dump(target, f, indent=2)
+                except OSError:
+                    pass
+        write_mode(mode)
+        self.hist("log", "settings", None, f"switched to {mode}")
+        self.switch_to = mode
+        self._on_close()
 
     def _new_client(self) -> SmartShooterClient:
         c = SmartShooterClient(host=self.settings.get("host", "127.0.0.1"),
@@ -172,7 +249,16 @@ class App(tk.Tk):
 
         bar = ttk.Frame(self, padding=(10, 8))
         bar.pack(fill="x")
-        ttk.Button(bar, text="Load student list", command=self.ask_load_list).pack(side="left")
+        mode_btn = ttk.Menubutton(bar, text=f"{self.terms['switch']} ▾")
+        mmenu = tk.Menu(mode_btn, tearoff=False)
+        self.mode_var = tk.StringVar(value=self.mode)
+        for m, t in MODES.items():
+            mmenu.add_radiobutton(label=f"{t['switch']} photos", value=m, variable=self.mode_var,
+                                  command=lambda m=m: self.switch_mode(m))
+        mode_btn["menu"] = mmenu
+        mode_btn.pack(side="left", padx=(0, 10))
+        ttk.Button(bar, text=f"Load {'staff' if self.mode == 'staff' else 'student'} list",
+                   command=self.ask_load_list).pack(side="left")
         tass_btn = ttk.Menubutton(bar, text="TASS")
         tmenu = tk.Menu(tass_btn, tearoff=False)
         tmenu.add_command(label="Load students from TASS", command=lambda: load_from_tass(self))
@@ -245,9 +331,9 @@ class App(tk.Tk):
         self.banner_text.pack(side="left", fill="both", expand=True)
         self.banner_small = tk.Label(self.banner_text, text="Now shooting", font=("Segoe UI", 10), anchor="w")
         self.banner_small.pack(fill="x", padx=14, pady=(8, 0))
-        self.banner_big = tk.Label(self.banner_text, text="No student selected", font=("Segoe UI", 24, "bold"), anchor="w")
+        self.banner_big = tk.Label(self.banner_text, text=f"No {self.terms['person']} selected", font=("Segoe UI", 24, "bold"), anchor="w")
         self.banner_big.pack(fill="x", padx=14)
-        self.banner_detail = tk.Label(self.banner_text, text="Load a student list, then click a name.", font=("Segoe UI", 10), anchor="w")
+        self.banner_detail = tk.Label(self.banner_text, text=f"Load a {'staff' if self.mode == 'staff' else 'student'} list, then click a name.", font=("Segoe UI", 10), anchor="w")
         self.banner_detail.pack(fill="x", padx=14)
         btns = tk.Frame(self.banner_text)
         btns.pack(fill="x", padx=14, pady=(6, 10))
@@ -296,7 +382,7 @@ class App(tk.Tk):
 
         cols = ("done", "number", "name", "group", "campus", "photos")
         self.tree = ttk.Treeview(left, columns=cols, show="headings", selectmode="browse")
-        self._headings = {"done": "", "number": "Number", "name": "Name", "group": "Class",
+        self._headings = {"done": "", "number": "Number", "name": "Name", "group": self.terms["group"],
                           "campus": "Campus", "photos": "Photos"}
         heading_sort = {"number": "Student number", "name": "Surname", "group": "Class",
                         "campus": "Campus", "photos": "Photos"}
@@ -322,7 +408,7 @@ class App(tk.Tk):
         body.add(right, weight=2)
         self.progress_label = ttk.Label(right, text="No student list loaded")
         self.progress_label.pack(anchor="w")
-        self.strip_box = ttk.LabelFrame(right, text="Photos of the selected student", padding=6)
+        self.strip_box = ttk.LabelFrame(right, text=f"Photos of the selected {self.terms['person']}", padding=6)
         self.strip_box.pack(fill="x", pady=(10, 0))
         self.strip_hint = ttk.Label(self.strip_box, foreground="#666666",
                                     text="Click a photo to star it as the best one. Export uses the starred photo.")
@@ -495,7 +581,7 @@ class App(tk.Tk):
             self.progress_label.configure(text="No student list loaded")
             return
         done = sum(1 for s in self.students if self.photos.get(s.key))
-        self.progress_label.configure(text=f"{done} of {len(self.students)} students photographed")
+        self.progress_label.configure(text=f"{done} of {len(self.students)} {self.terms['people']} photographed")
 
     def _search_enter(self, _e=None) -> None:
         kids = self.tree.get_children()
@@ -570,9 +656,9 @@ class App(tk.Tk):
         if hasattr(self, "retake_btn"):
             self.retake_btn.configure(text="Undo retake mark" if s and s.key in self.retakes else "Mark for retake")
         if not s:
-            self.banner_big.configure(text="No student selected")
+            self.banner_big.configure(text=f"No {self.terms['person']} selected")
             self.banner_detail.configure(text="Photos taken now won't be linked to a student." if self.students
-                                         else "Load a student list, then click a name.")
+                                         else f"Load a {'staff' if self.mode == 'staff' else 'student'} list, then click a name.")
             self._paint_banner("idle")
             return
         self.banner_big.configure(text=("⚠ " if s.privacy else "") + s.display)
@@ -669,6 +755,12 @@ class App(tk.Tk):
         if "Barcode" in opts:
             self.ss_tag = opts.get("Barcode") or ""
         path = opts.get("DownloadPath")
+        own = self.settings.get("photo_folder")
+        if own and path and os.path.normcase(os.path.normpath(path)) != os.path.normcase(own):
+            # Point Smart Shooter at this mode's photo folder.
+            self.client.request("SetOptions", {"DownloadPath": own}, "SetFolder")
+            self.log(f"Smart Shooter will save {self.terms['people']} photos to {own}")
+            path = own
         if path and path != self.download_path:
             self.download_path = path
             self.settings["download_path"] = path
@@ -840,7 +932,7 @@ class App(tk.Tk):
 
     def save_missing_list(self) -> None:
         if not self.students:
-            messagebox.showinfo(APP_NAME, "Load a student list first.")
+            messagebox.showinfo(APP_NAME, f"Load a {'staff' if self.mode == 'staff' else 'student'} list first.")
             return
         missing = [s for s in self.students if not self.photos.get(s.key)]
         path = filedialog.asksaveasfilename(defaultextension=".csv", initialfile="not_yet_photographed.csv",
@@ -899,7 +991,7 @@ class App(tk.Tk):
         self.strip_cells = {}
         s = self.current
         if not s:
-            self.strip_box.configure(text="Photos of the selected student")
+            self.strip_box.configure(text=f"Photos of the selected {self.terms['person']}")
             return
         paths = self.student_photo_paths(s)
         star = self.best.get(s.key)
@@ -1058,7 +1150,7 @@ class App(tk.Tk):
         from .reports import contact_sheets
         students = self.report_students()
         if not students:
-            messagebox.showinfo(APP_NAME, "Load a student list first.")
+            messagebox.showinfo(APP_NAME, f"Load a {'staff' if self.mode == 'staff' else 'student'} list first.")
             return
         path = filedialog.asksaveasfilename(
             title="Save contact sheets" + self._scope_label(), defaultextension=".pdf",
@@ -1087,7 +1179,7 @@ class App(tk.Tk):
         from .reports import retake_list_csv, retake_list_pdf, retake_rows
         students = self.report_students()
         if not students:
-            messagebox.showinfo(APP_NAME, "Load a student list first.")
+            messagebox.showinfo(APP_NAME, f"Load a {'staff' if self.mode == 'staff' else 'student'} list first.")
             return
         unstarred = messagebox.askyesno(APP_NAME, "Also list students who have photos but no ★ best photo chosen?")
         rows = retake_rows(students, lambda s: len(self.photos.get(s.key, ())), self.retakes, unstarred, self.best)
@@ -1145,7 +1237,7 @@ class AddStudentDialog(tk.Toplevel):
     def __init__(self, app: App):
         super().__init__(app)
         self.app = app
-        self.title("Add a student")
+        self.title(f"Add a {app.terms['person']}")
         self.transient(app)
         self.resizable(False, False)
         frm = ttk.Frame(self, padding=14)
@@ -1155,8 +1247,8 @@ class AddStudentDialog(tk.Toplevel):
         self.vars = {}
         choices = {"group": sorted({s.group for s in app.students if s.group}),
                    "campus": sorted({s.campus for s in app.students if s.campus})}
-        for row, (key, label) in enumerate((("number", "Student number"), ("first", "First name"),
-                                            ("last", "Last name"), ("group", "Class"), ("campus", "Campus")), start=1):
+        for row, (key, label) in enumerate((("number", app.terms["number"]), ("first", "First name"),
+                                            ("last", "Last name"), ("group", app.terms["group"]), ("campus", "Campus")), start=1):
             ttk.Label(frm, text=label).grid(row=row, column=0, sticky="w", pady=3)
             var = tk.StringVar()
             if key in choices:
@@ -1489,4 +1581,10 @@ class ExportDialog(tk.Toplevel):
 
 
 def main() -> None:
-    App().mainloop()
+    mode = None
+    while True:
+        app = App(mode)
+        app.mainloop()
+        if not app.switch_to:
+            break
+        mode = app.switch_to

@@ -22,6 +22,14 @@ PAGE = 500
 TIMEOUT = 30
 STUDENT_FIELDS = ["stud_code", "first_name", "preferred_name", "surname", "preferred_surname", "campus_code",
                   "pctut_grp", "form_cls", "year_grp", "house", "doe", "dol", "privacy_flg"]
+EMPLOYEE_FIELDS = ["emp_code", "title", "first_name", "preferred_name", "surname", "position_title",
+                   "position_text", "main_activity", "status_text", "start_date", "term_date"]
+STAFF_GROUP_SOURCES = {    # label -> TASS employee field
+    "Position title": "position_title",
+    "Main activity": "main_activity",
+    "Employee status": "status_text",
+    "None": "",
+}
 CLASS_SOURCES = {          # label -> TASS field
     "Tutor group": "pctut_grp",
     "Form class": "form_cls",
@@ -144,32 +152,42 @@ class TassClient:
 
     # ------------------------------------------------------------------ students
     def students(self, progress=None, today: dt.date | None = None) -> list[dict]:
-        """Current students only. TASS filters them (dates of entry/leaving) so past and future
-        students are never downloaded; if this TASS version can't filter, the app filters instead."""
-        today = (today or dt.date.today()).isoformat()
-        current = f"(dol eq null or dol ge {today}) and (doe eq null or doe le {today})"
+        """Current students only (date of entry / date of leaving)."""
+        return self._current("students", STUDENT_FIELDS, "doe", "dol", progress, today)
+
+    def employees(self, progress=None, today: dt.date | None = None) -> list[dict]:
+        """Current staff only (employment start date / termination date)."""
+        return self._current("employees", EMPLOYEE_FIELDS, "start_date", "term_date", progress, today)
+
+    def _current(self, path, fields, start_field, end_field, progress=None, today=None) -> list[dict]:
+        """TASS filters by the start/end dates so past and future people are never downloaded;
+        if this TASS version can't apply the filter, the app filters instead."""
+        day = today or dt.date.today()
+        iso = day.isoformat()
+        current = (f"({end_field} eq null or {end_field} ge {iso}) and "
+                   f"({start_field} eq null or {start_field} le {iso})")
         self.filtered_by_tass = True
         rows: list[dict] = []
         skip = 0
         while True:
-            params = {"$select": ",".join(STUDENT_FIELDS), "$orderby": "surname asc,first_name asc",
+            params = {"$select": ",".join(fields), "$orderby": "surname asc,first_name asc",
                       "$top": PAGE, "$skip": skip}
             if self.filtered_by_tass:
                 params["$filter"] = current
             try:
-                page = self.get("students", params)
+                page = self.get(path, params)
             except TassError:
                 if not (self.filtered_by_tass and skip == 0 and self.last_status == 400):
                     raise
-                self.filtered_by_tass = False      # this TASS couldn't apply the filter: load and filter here
+                self.filtered_by_tass = False
                 continue
             if not isinstance(page, list):
-                raise TassError("TASS sent an unexpected reply for the student list.")
+                raise TassError(f"TASS sent an unexpected reply for the {path} list.")
             rows.extend(page)
             if progress:
                 progress(len(rows))
             if len(page) < PAGE:
-                return [r for r in rows if is_current(r)]
+                return [r for r in rows if is_current(r, day, start_field, end_field)]
             skip += PAGE
 
 
@@ -192,13 +210,13 @@ def _parse_date(text):
         return None
 
 
-def is_current(row: dict, today: dt.date | None = None) -> bool:
-    """Enrolled today: started (or no start date) and not yet left (or no leaving date)."""
+def is_current(row: dict, today: dt.date | None = None, start_field: str = "doe", end_field: str = "dol") -> bool:
+    """Here today: started (or no start date) and not yet left (or no leaving date)."""
     today = today or dt.date.today()
-    left = _parse_date(row.get("dol"))
+    left = _parse_date(row.get(end_field))
     if left and left < today:
         return False
-    entry = _parse_date(row.get("doe"))
+    entry = _parse_date(row.get(start_field))
     if entry and entry > today:
         return False
     return True
@@ -281,3 +299,21 @@ def _dpapi(data: bytes, protect: bool) -> bytes:
 
 def cache_path(app_folder: str) -> str:
     return os.path.join(app_folder, "tass_students.csv")
+
+
+def to_staff(rows: list[dict], group_source: str = "Position title", preferred_names: bool = True,
+             groups: list[str] | None = None, today: dt.date | None = None) -> list[Student]:
+    """Map TASS employees to the app's people. 'groups' limits to those position titles / activities."""
+    field = STAFF_GROUP_SOURCES.get(group_source, "position_title")
+    wanted = {g.strip().lower() for g in groups or [] if g.strip()}
+    out: list[Student] = []
+    for r in rows:
+        code = str(r.get("emp_code") or "").strip()
+        if not code or not is_current(r, today, "start_date", "term_date"):
+            continue
+        group = str(r.get(field) or "").strip() if field else ""
+        if wanted and group.lower() not in wanted:
+            continue
+        first = (r.get("preferred_name") if preferred_names else None) or r.get("first_name") or ""
+        out.append(Student(code, str(first).strip(), str(r.get("surname") or "").strip(), group, ""))
+    return out

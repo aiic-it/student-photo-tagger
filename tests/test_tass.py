@@ -5,7 +5,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.tass import TassClient, TassError, api_root, protect, to_students, unprotect  # noqa: E402
+from app.tass import TassClient, TassError, api_root, protect, to_staff, to_students, unprotect  # noqa: E402
 from tests.fake_tass import COMPANY, KEY, SECRET, FakeTass  # noqa: E402
 
 
@@ -104,6 +104,21 @@ class Tass(unittest.TestCase):
         got = c.students()
         self.assertFalse(c.filtered_by_tass)
         self.assertEqual(len(got), 1202)                 # still current students only
+
+    def test_current_staff_only(self):
+        emps = self.fake.employees
+        emps[0]["term_date"] = "2021-03-31"            # left
+        emps[1]["start_date"] = "2099-01-28"           # not started
+        emps[2]["preferred_name"] = "Jo"
+        got = self.client().employees()
+        self.assertEqual(len(got), 28)
+        self.assertIn("term_date%20eq%20null", "".join(self.fake.calls))
+        staff = to_staff(got)
+        self.assertEqual(staff[0].first, "Jo")
+        self.assertEqual(staff[0].group, "Admin Officer")
+        self.assertEqual({s.group for s in to_staff(got, "Main activity")}, {"Teaching", "Administration"})
+        self.assertEqual({s.group for s in to_staff(got, "None")}, {""})
+        self.assertTrue(all(s.group == "Teacher" for s in to_staff(got, groups=["teacher"])))
 
     def test_secret_round_trip(self):
         stored = protect("s3cret!")
