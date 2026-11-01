@@ -504,11 +504,11 @@ class CampusSortingAndHistory(_Guard):
         self.assertEqual(self.shown(), ["Amaya Silva", "Nimal Perera", "Zara Abeysekara"])
         app.sort_by.set("Campus"); app._sort_changed()
         self.assertEqual(self.shown(), ["Nimal Perera", "Zara Abeysekara", "Amaya Silva"])      # North 7B, 10A; South
-        app.sort_from_heading("Campus")                                                          # click again = reverse
+        app.sort_from_heading("campus")                                                          # click again = reverse
         self.assertTrue(app.sort_reverse.get())
         self.assertEqual(self.shown(), ["Amaya Silva", "Zara Abeysekara", "Nimal Perera"])
         self.assertTrue(app.tree.heading("campus", "text").endswith("▼"))
-        app.sort_from_heading("Student number")
+        app.sort_from_heading("number")
         self.assertEqual(self.shown(), ["Amaya Silva", "Zara Abeysekara", "Nimal Perera"])
         self.assertEqual(app.settings["sort_by"], "Student number")
         app.campus_filter.set("North"); app.refresh_list()
@@ -806,6 +806,12 @@ class StaffMode(_Guard):
         self.assertEqual(app.students, [])
         self.assertIsNone(app.current)
         self.assertEqual(app.load_btn.cget("text"), "Load staff list")
+        self.assertNotIn("Campus", app.sort_box.cget("values"))
+        self.assertNotIn("Student number", app.sort_box.cget("values"))
+        self.assertIn("Staff code", app.sort_box.cget("values"))
+        self.assertIn("Position", app.sort_box.cget("values"))
+        self.assertNotIn("campus", app.tree.cget("displaycolumns"))
+        self.assertFalse(app.campus_box.winfo_ismapped())
         self.assertEqual(app.tree.heading("group", "text").split(" ")[0], "Position")
         self.wait(lambda: ss.options["DownloadPath"] == staff_dir and ss.options["Barcode"] == "NO-STUDENT",
                   what="Smart Shooter switched to staff folder, nobody selected")
@@ -815,6 +821,11 @@ class StaffMode(_Guard):
         self.wait(lambda: len(app.students) == 30, what="staff loaded from TASS")
         emp = app.index.find_by_number("E100")
         self.assertEqual((emp.first, emp.group), ("Staff0", "Teacher"))
+        app.sort_by.set("Position"); app._sort_changed()
+        first = app.tree.get_children()[0]
+        self.assertEqual(app.tree.item(first, "values")[3], "Admin Officer")    # positions A-Z
+        app.sort_from_heading("number")
+        self.assertEqual(app.sort_by.get(), "Staff code")
         app.select_student(emp)
         self.wait(lambda: ss.options["Barcode"] == "E100_Staff0_Teacher000", what="staff tag")
         ss.shoot()

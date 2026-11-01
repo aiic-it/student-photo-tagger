@@ -262,6 +262,8 @@ class App(tk.Tk):
         self.client.request("SetOptions", options, "SetTag:" + NO_STUDENT_TAG)
 
         self._apply_mode_labels()
+        self.sort_by.set(self.settings.get("sort_by", "List order"))
+        self.sort_reverse.set(self.settings.get("sort_reverse", False))
         self.search_var.set("")
         self.campus_filter.set("All campuses")
         last = self.settings.get("last_list")
@@ -288,6 +290,7 @@ class App(tk.Tk):
         self._headings["group"] = t["group"]
         self.strip_box.configure(text=f"Photos of the selected {t['person']}")
         self.banner_small.configure(text=f"Now shooting — {t['people']}")
+        self._update_campus_choices()
 
     def choose_photo_folder(self) -> None:
         folder = filedialog.askdirectory(title=f"Folder for {self.terms['people']} photos",
@@ -445,10 +448,7 @@ class App(tk.Tk):
         sort_row.pack(fill="x", pady=(0, 6))
         ttk.Label(sort_row, text="Sort by").pack(side="left")
         self.sort_by = tk.StringVar(value=self.settings.get("sort_by", "List order"))
-        if self.sort_by.get() not in SORT_OPTIONS:
-            self.sort_by.set("List order")
-        sort_box = ttk.Combobox(sort_row, textvariable=self.sort_by, values=list(SORT_OPTIONS),
-                                state="readonly", width=16)
+        self.sort_box = sort_box = ttk.Combobox(sort_row, textvariable=self.sort_by, state="readonly", width=16)
         sort_box.pack(side="left", padx=(6, 0))
         sort_box.bind("<<ComboboxSelected>>", lambda e: self._sort_changed())
         self.sort_reverse = tk.BooleanVar(value=self.settings.get("sort_reverse", False))
@@ -459,14 +459,15 @@ class App(tk.Tk):
                                        values=["All campuses"])
         self.campus_box.pack(side="right")
         self.campus_box.bind("<<ComboboxSelected>>", lambda e: self.refresh_list())
-        ttk.Label(sort_row, text="Show").pack(side="right", padx=(0, 6))
+        self.show_label = ttk.Label(sort_row, text="Show")
+        self.show_label.pack(side="right", padx=(0, 6))
+        self._campus_shown = True
 
         cols = ("done", "number", "name", "group", "campus", "photos")
         self.tree = ttk.Treeview(left, columns=cols, show="headings", selectmode="browse")
         self._headings = {"done": "", "number": "Number", "name": "Name", "group": self.terms["group"],
                           "campus": "Campus", "photos": "Photos"}
-        heading_sort = {"number": "Student number", "name": "Surname", "group": "Class",
-                        "campus": "Campus", "photos": "Photos"}
+        heading_sort = {"number": "number", "name": "last", "group": "class", "campus": "campus", "photos": "photos"}
         for c, w, anchor in (("done", 30, "center"), ("number", 90, "w"), ("name", 220, "w"),
                              ("group", 80, "w"), ("campus", 110, "w"), ("photos", 60, "e")):
             if c in heading_sort:
@@ -588,7 +589,7 @@ class App(tk.Tk):
         q = self.search_var.get().strip().lower()
         campus = self.campus_filter.get()
         self.tree.delete(*self.tree.get_children())
-        key = SORT_OPTIONS.get(self.sort_by.get(), "list")
+        key = self.sort_options().get(self.sort_by.get(), "list")
         ordered = sort_students(self.students, key, self.sort_reverse.get(),
                                 photo_count=lambda st: len(self.photos.get(st.key, ())))
         self._paint_headings(key)
@@ -617,7 +618,33 @@ class App(tk.Tk):
         self.save_settings()
         self.refresh_list()
 
-    def sort_from_heading(self, label: str) -> None:
+    def sort_options(self) -> dict:
+        """Sort choices that make sense for the people in the list (label -> sort key)."""
+        staff = self.mode == "staff"
+        opts = {"List order": "list"}
+        if self._has_campus():
+            opts["Campus"] = "campus"
+        opts.update({"Surname": "last", "First name": "first",
+                     ("Staff code" if staff else "Student number"): "number",
+                     ("Position" if staff else "Class"): "class", "Photos": "photos"})
+        return opts
+
+    def _has_campus(self) -> bool:
+        return any(s.campus for s in self.students)
+
+    def _update_sort_choices(self) -> None:
+        opts = self.sort_options()
+        self.sort_box.configure(values=list(opts))
+        if self.students and self.sort_by.get() not in opts:
+            # Same sort under this mode's name (e.g. Class -> Position), otherwise list order.
+            old_key = SORT_OPTIONS.get(self.sort_by.get()) or {"Staff code": "number", "Position": "class"}.get(
+                self.sort_by.get())
+            self.sort_by.set(next((l for l, k in opts.items() if k == old_key), "List order"))
+
+    def sort_from_heading(self, key: str) -> None:
+        label = next((l for l, k in self.sort_options().items() if k == key), None)
+        if not label:
+            return
         if self.sort_by.get() == label:
             self.sort_reverse.set(not self.sort_reverse.get())
         else:
@@ -633,6 +660,19 @@ class App(tk.Tk):
             self.tree.heading(c, text=text + (arrow if col_for.get(key) == c else ""))
 
     def _update_campus_choices(self) -> None:
+        show = self._has_campus()
+        if show != self._campus_shown:
+            self._campus_shown = show
+            cols = ["done", "number", "name", "group"] + (["campus"] if show else []) + ["photos"]
+            self.tree.configure(displaycolumns=cols)
+            if show:
+                self.campus_box.pack(side="right")
+                self.show_label.pack(side="right", padx=(0, 6))
+            else:
+                self.campus_box.pack_forget()
+                self.show_label.pack_forget()
+                self.campus_filter.set("All campuses")
+        self._update_sort_choices()
         campuses = sorted({s.campus for s in self.students if s.campus}, key=str.lower)
         if any(not s.campus for s in self.students) and campuses:
             campuses.append("(No campus)")
