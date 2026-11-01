@@ -12,6 +12,7 @@ import time
 import tkinter as tk
 import webbrowser
 from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import font as tkfont
 
 from . import __version__
 from .core import (SORT_OPTIONS, sort_students, ExportOptions, ListError, Student, StudentIndex, existing_conflicts,
@@ -273,6 +274,7 @@ class App(tk.Tk):
             self._update_campus_choices()
             self.refresh_list()
             self._show_current()
+            self.fit_columns()
         self._refresh_strip()
         self.last_img.configure(image="", text="No photos yet", width=22, height=6)
         self.last_caption.configure(text="")
@@ -475,7 +477,11 @@ class App(tk.Tk):
                                   command=lambda k=heading_sort[c]: self.sort_from_heading(k))
             else:
                 self.tree.heading(c, text=self._headings[c])
-            self.tree.column(c, width=w, anchor=anchor, stretch=(c == "name"))
+            # No column stretches, so dragging a column edge always resizes exactly that column.
+            self.tree.column(c, width=w, minwidth=30 if c == "done" else 50, anchor=anchor, stretch=False)
+        self.tree.bind("<ButtonPress-1>", self._tree_press, add="+")
+        self.tree.bind("<ButtonRelease-1>", self._tree_release, add="+")
+        self.tree.bind("<Button-3>", self._tree_menu, add="+")
         self.tree.tag_configure("done", foreground="#1E5E2F")
         self.tree.tag_configure("current", background="#DCEBFA")
         self.tree.tag_configure("added", foreground="#1F4E8C")
@@ -560,6 +566,7 @@ class App(tk.Tk):
         self.recount_from_folder()
         self._update_campus_choices()
         self.refresh_list()
+        self.fit_columns()
         self._show_current()
         self._update_tag_example()
         self.log(f"Loaded {len(students)} students from {os.path.basename(path)}")
@@ -617,6 +624,53 @@ class App(tk.Tk):
         self.settings["sort_reverse"] = self.sort_reverse.get()
         self.save_settings()
         self.refresh_list()
+
+    # ------------------------------------------------------------------ column widths
+    FIT_LIMITS = {"number": (60, 170), "name": (140, 460), "group": (60, 280), "campus": (70, 240)}
+
+    def _tree_press(self, event) -> None:
+        self._resizing = self.tree.identify_region(event.x, event.y) == "separator"
+
+    def _tree_release(self, event) -> None:
+        if getattr(self, "_resizing", False):
+            self._resizing = False
+            self.settings["col_widths"] = {c: int(self.tree.column(c, "width")) for c in self._headings}
+            self.save_settings()
+
+    def _tree_menu(self, event) -> None:
+        if self.tree.identify_region(event.x, event.y) not in ("heading", "separator"):
+            return
+        menu = tk.Menu(self, tearoff=False)
+        menu.add_command(label="Fit columns to the names in the list", command=self.reset_columns)
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def reset_columns(self) -> None:
+        self.settings.pop("col_widths", None)
+        self.save_settings()
+        self.fit_columns()
+
+    def fit_columns(self) -> None:
+        """Size columns to their contents, unless the person has set widths by dragging."""
+        saved = self.settings.get("col_widths") or {}
+        if saved:
+            for c, w in saved.items():
+                if c in self._headings:
+                    self.tree.column(c, width=int(w))
+            return
+        try:
+            f = tkfont.nametofont(ttk.Style(self).lookup("Treeview", "font") or "TkDefaultFont")
+        except tk.TclError:
+            f = tkfont.nametofont("TkDefaultFont")
+        sample = self.students[:3000]
+        texts = {
+            "number": [s.number for s in sample],
+            "name": [("⚠ " if s.privacy else "") + s.display + ("  (added)" if s.added else "") for s in sample],
+            "group": [s.group for s in sample],
+            "campus": [s.campus for s in sample],
+        }
+        for c, (lo, hi) in self.FIT_LIMITS.items():
+            widest = max([f.measure(t) for t in texts[c] if t] + [f.measure(self._headings[c] + " ▲")])
+            self.tree.column(c, width=max(lo, min(hi, widest + 24)))
 
     def sort_options(self) -> dict:
         """Sort choices that make sense for the people in the list (label -> sort key)."""

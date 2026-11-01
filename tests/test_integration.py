@@ -821,6 +821,20 @@ class StaffMode(_Guard):
         self.wait(lambda: len(app.students) == 30, what="staff loaded from TASS")
         emp = app.index.find_by_number("E100")
         self.assertEqual((emp.first, emp.group), ("Staff0", "Teacher"))
+        # Columns fit the staff names and positions; dragged widths are remembered.
+        from tkinter import font as tkfont
+        f = tkfont.nametofont(self.gui.ttk.Style(app).lookup("Treeview", "font") or "TkDefaultFont")
+        self.assertGreaterEqual(int(app.tree.column("group", "width")), f.measure("Admin Officer"))
+        self.assertGreaterEqual(int(app.tree.column("name", "width")), f.measure("Staff29 Teacher029"))
+        app.tree.column("name", width=333)
+        app._resizing = True
+        app._tree_release(None)
+        self.assertEqual(app.settings["col_widths"]["name"], 333)
+        app.tree.column("name", width=100)
+        app.fit_columns()
+        self.assertEqual(int(app.tree.column("name", "width")), 333)
+        app.reset_columns()
+        self.assertNotIn("col_widths", app.settings)
         app.sort_by.set("Position"); app._sort_changed()
         first = app.tree.get_children()[0]
         self.assertEqual(app.tree.item(first, "values")[3], "Admin Officer")    # positions A-Z
