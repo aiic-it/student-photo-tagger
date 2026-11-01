@@ -146,6 +146,7 @@ class App(tk.Tk):
             self._history_error = str(e)
 
         self._build_ui()
+        self._apply_mode_labels()
         if self.history is None:
             self.log(f"History is off: couldn't open the history database ({self._history_error})", warn=True)
         self.client = self._new_client()
@@ -205,31 +206,103 @@ class App(tk.Tk):
             pass
 
     # =================================================================== students / staff
+    def _default_folder(self, mode: str) -> str:
+        """Where a mode's photos go if none was chosen: staff in a Staff subfolder of the student folder."""
+        here = self.settings.get("photo_folder") or self.download_path
+        if not here:
+            return ""
+        if mode == "staff":
+            return here if os.path.basename(here).lower() == "staff" else os.path.join(here, "Staff")
+        return os.path.dirname(here) if os.path.basename(here).lower() == "staff" else here
+
     def switch_mode(self, mode: str) -> None:
+        """Switch between students and staff instantly, in the same window, keeping Smart Shooter connected."""
         if mode == self.mode or mode not in MODES:
+            self.mode_var.set(self.mode)
             return
-        # Keep each mode's photos in their own Smart Shooter folder.
+        # Close windows that belong to the current list (export, history, TASS, add person).
+        for w in list(self.winfo_children()):
+            if isinstance(w, tk.Toplevel):
+                w.destroy()
         if self.download_path and not self.settings.get("photo_folder"):
             self.settings["photo_folder"] = self.download_path
+        target_folder = _read_json(settings_path(mode)).get("photo_folder") or self._default_folder(mode)
         self.save_settings()
-        target_file = settings_path(mode)
-        target = _read_json(target_file)
-        if not target.get("photo_folder"):
-            start = self.download_path or os.path.expanduser("~")
-            folder = filedialog.askdirectory(
-                title=f"Choose a folder for {MODES[mode]['people']} photos (Cancel = same folder as now)",
-                initialdir=start)
-            if folder:
-                target["photo_folder"] = os.path.normpath(folder)
-                try:
-                    with open(target_file, "w", encoding="utf-8") as f:
-                        json.dump(target, f, indent=2)
-                except OSError:
-                    pass
-        write_mode(mode)
         self.hist("log", "settings", None, f"switched to {mode}")
-        self.switch_to = mode
-        self._on_close()
+        if self.history:
+            self.history.close()
+
+        # Load the other mode's settings and data.
+        self.mode = mode
+        self.terms = MODES[mode]
+        write_mode(mode)
+        self.settings_file = settings_path(mode)
+        self.settings = self._load_settings()
+        if target_folder and not self.settings.get("photo_folder"):
+            self.settings["photo_folder"] = target_folder
+            self.save_settings()
+        self.history = None
+        try:
+            self.history = History(os.path.join(os.path.dirname(self.settings_file), "history.db"), __version__)
+            self.history.start_session(photo_folder=self.settings.get("photo_folder", ""))
+        except Exception as e:
+            self.log(f"History is off: couldn't open the history database ({e})", warn=True)
+        self.students, self.index, self.current = [], StudentIndex([]), None
+        self.photos, self.best, self.photo_log = {}, {}, []
+        self.retakes = dict(self.settings.get("retakes", {}))
+        self.last_photo = None
+        self.download_path = self.settings.get("photo_folder") or self.settings.get("download_path", "")
+
+        # Smart Shooter: no person selected, and this mode's photo folder.
+        options = {"Barcode": NO_STUDENT_TAG}
+        if self.settings.get("photo_folder"):
+            options["DownloadPath"] = self.settings["photo_folder"]
+            os.makedirs(self.settings["photo_folder"], exist_ok=True)
+        self.sent_tag = NO_STUDENT_TAG
+        self.client.request("SetOptions", options, "SetTag:" + NO_STUDENT_TAG)
+
+        self._apply_mode_labels()
+        self.search_var.set("")
+        self.campus_filter.set("All campuses")
+        last = self.settings.get("last_list")
+        if last and os.path.isfile(last):
+            self.load_list(last, quiet=True)
+        else:
+            self._update_campus_choices()
+            self.refresh_list()
+            self._show_current()
+        self._refresh_strip()
+        self.last_img.configure(image="", text="No photos yet", width=22, height=6)
+        self.last_caption.configure(text="")
+        self.log(f"——— {self.terms['switch']} ———")
+        if self.settings.get("photo_folder"):
+            self.log(f"{self.terms['Person']} photos go to {self.settings['photo_folder']}")
+
+    def _apply_mode_labels(self) -> None:
+        t = self.terms
+        self.title(f"{t['title']} {__version__}")
+        self.mode_var.set(self.mode)
+        self.load_btn.configure(text=f"Load {'staff' if self.mode == 'staff' else 'student'} list")
+        self.tass_menu.entryconfigure(0, label=f"Load {t['people']} from TASS")
+        self.ss_menu.entryconfigure(self._folder_item, label=f"Photo folder for {t['people']}…")
+        self._headings["group"] = t["group"]
+        self.strip_box.configure(text=f"Photos of the selected {t['person']}")
+        self.banner_small.configure(text=f"Now shooting — {t['people']}")
+
+    def choose_photo_folder(self) -> None:
+        folder = filedialog.askdirectory(title=f"Folder for {self.terms['people']} photos",
+                                         initialdir=self.settings.get("photo_folder") or self.download_path or None)
+        if not folder:
+            return
+        folder = os.path.normpath(folder)
+        self.settings["photo_folder"] = folder
+        self.save_settings()
+        self.client.request("SetOptions", {"DownloadPath": folder}, "SetFolder")
+        self.download_path = folder
+        self.log(f"{self.terms['Person']} photos now go to {folder}")
+        self.photos = {}
+        self.recount_from_folder()
+        self.refresh_list()
 
     def _new_client(self) -> SmartShooterClient:
         c = SmartShooterClient(host=self.settings.get("host", "127.0.0.1"),
@@ -249,19 +322,24 @@ class App(tk.Tk):
 
         bar = ttk.Frame(self, padding=(10, 8))
         bar.pack(fill="x")
-        mode_btn = ttk.Menubutton(bar, text=f"{self.terms['switch']} ▾")
-        mmenu = tk.Menu(mode_btn, tearoff=False)
         self.mode_var = tk.StringVar(value=self.mode)
+        toggle = ttk.Frame(bar)
+        toggle.pack(side="left", padx=(0, 12))
+        style = ttk.Style(self)
+        style.configure("Mode.Toolbutton", padding=(12, 4))
+        self.mode_buttons = {}
         for m, t in MODES.items():
-            mmenu.add_radiobutton(label=f"{t['switch']} photos", value=m, variable=self.mode_var,
-                                  command=lambda m=m: self.switch_mode(m))
-        mode_btn["menu"] = mmenu
-        mode_btn.pack(side="left", padx=(0, 10))
-        ttk.Button(bar, text=f"Load {'staff' if self.mode == 'staff' else 'student'} list",
-                   command=self.ask_load_list).pack(side="left")
+            b = ttk.Radiobutton(toggle, text=t["switch"], value=m, variable=self.mode_var, style="Mode.Toolbutton",
+                                command=lambda m=m: self.switch_mode(m))
+            b.pack(side="left")
+            self.mode_buttons[m] = b
+        self.load_btn = ttk.Button(bar, text=f"Load {'staff' if self.mode == 'staff' else 'student'} list",
+                                   command=self.ask_load_list)
+        self.load_btn.pack(side="left")
         tass_btn = ttk.Menubutton(bar, text="TASS")
         tmenu = tk.Menu(tass_btn, tearoff=False)
-        tmenu.add_command(label="Load students from TASS", command=lambda: load_from_tass(self))
+        self.tass_menu = tmenu
+        tmenu.add_command(label=f"Load {self.terms['people']} from TASS", command=lambda: load_from_tass(self))
         tmenu.add_command(label="TASS connection settings…", command=lambda: TassSettingsDialog(self))
         tass_btn["menu"] = tmenu
         tass_btn.pack(side="left", padx=(6, 0))
@@ -280,7 +358,10 @@ class App(tk.Tk):
         reports.pack(side="left", padx=(6, 0))
         setup = ttk.Menubutton(bar, text="Smart Shooter")
         smenu = tk.Menu(setup, tearoff=False)
+        self.ss_menu = smenu
         smenu.add_command(label="Set up file naming…", command=self.apply_naming)
+        smenu.add_command(label=f"Photo folder for {self.terms['people']}…", command=self.choose_photo_folder)
+        self._folder_item = 1
         smenu.add_command(label="Reconnect", command=self.reconnect)
         smenu.add_command(label="Connection address…", command=self.change_host)
         setup["menu"] = smenu

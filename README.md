@@ -27,11 +27,13 @@ This happens because the app isn't digitally signed.
 
 ## Staff photos
 
-Click **Students ▾** at the top left and choose **Staff photos**. The app restarts in staff mode
-("Staff Photo Tagger") with its own staff list, history, ★ stars and retakes, kept separately from students.
+Click **Staff** (next to **Students**, top left) to switch instantly. The window stays open and Smart Shooter
+stays connected; staff have their own list, history, ★ stars and retakes, kept separately from students.
+Click **Students** to switch back. The app remembers which one you used last.
 
-- The first time, it asks for a **folder for staff photos**; the app then switches Smart Shooter to that folder in
-  staff mode and back to the student folder in student mode, so the two never mix.
+- Staff photos go to a **Staff** subfolder of the student photo folder automatically, and the app moves Smart
+  Shooter between the two folders as you switch, so they never mix. To use a different folder:
+  **Smart Shooter → Photo folder for staff…** (or **…for students…**).
 - **TASS → Load staff from TASS** reads current staff (employment start/termination dates) from TASS's employee
   list. The TASS API user needs **Employee/HR > Information > Employee: Read** as well. The connection details are
   shared with student mode; the **Position** column can come from position title, main activity or employee status,

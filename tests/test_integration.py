@@ -771,12 +771,9 @@ class StaffMode(_Guard):
         os.makedirs(self.staff_dir)
         self.ss = FakeSmartShooter(self.student_dir, REQ_PORT, PUB_PORT).start()
         self.addCleanup(lambda: self.ss.stop())
-        self._orig_dir = gui.filedialog.askdirectory
-        gui.filedialog.askdirectory = lambda **k: self.staff_dir
         self.app = gui.App()
 
     def tearDown(self):
-        self.gui.filedialog.askdirectory = self._orig_dir
         try:
             self.app._on_close()
         except Exception:
@@ -794,17 +791,24 @@ class StaffMode(_Guard):
 
     def test_switch_to_staff_load_from_tass_and_back(self):
         app, ss = self.app, self.ss
+        staff_dir = os.path.join(self.student_dir, "Staff")
         self.assertEqual(app.mode, "students")
         self.wait(lambda: app.client.connected and app.download_path == self.student_dir, what="student folder")
-        app.switch_mode("staff")
-        self.assertEqual(app.switch_to, "staff")
+        app.select_student(app.index.find_by_number("10234"))
+        self.wait(lambda: ss.options["Barcode"] == "10234_Nimal_Perera", what="student tag")
+        client = app.client
 
-        self.app = app = self.gui.App()                       # what main() does next
+        app.switch_mode("staff")                               # instant, same window, no dialogs
+        self.assertIs(app.client, client)                      # Smart Shooter connection kept
         self.assertEqual(app.mode, "staff")
         self.assertTrue(app.title().startswith("Staff Photo Tagger"))
-        self.assertEqual(app.students, [])                     # staff have their own list
+        self.assertEqual(app.mode_var.get(), "staff")
+        self.assertEqual(app.students, [])
+        self.assertIsNone(app.current)
+        self.assertEqual(app.load_btn.cget("text"), "Load staff list")
         self.assertEqual(app.tree.heading("group", "text").split(" ")[0], "Position")
-        self.wait(lambda: ss.options["DownloadPath"] == self.staff_dir, what="Smart Shooter pointed at staff folder")
+        self.wait(lambda: ss.options["DownloadPath"] == staff_dir and ss.options["Barcode"] == "NO-STUDENT",
+                  what="Smart Shooter switched to staff folder, nobody selected")
 
         from app.tass_window import load_from_tass
         load_from_tass(app)                                    # TASS sign-in shared from student mode
@@ -814,17 +818,22 @@ class StaffMode(_Guard):
         app.select_student(emp)
         self.wait(lambda: ss.options["Barcode"] == "E100_Staff0_Teacher000", what="staff tag")
         ss.shoot()
-        self.assertTrue(os.path.isfile(os.path.join(self.staff_dir, "E100_Staff0_Teacher000.jpg")))
+        self.assertTrue(os.path.isfile(os.path.join(staff_dir, "E100_Staff0_Teacher000.jpg")))
         self.wait(lambda: len(app.photos.get(emp.key, {})) == 1, what="staff photo counted")
         self.assertEqual(app.history.student_rows("Staff0")[0]["photos"], 1)
 
         app.switch_mode("students")
-        self.app = app = self.gui.App()
         self.assertEqual(app.mode, "students")
         self.assertEqual([s.number for s in app.students], ["10234"])
         self.assertEqual(app.history.student_rows("Staff0"), [])  # separate history
         self.wait(lambda: ss.options["DownloadPath"] == self.student_dir, what="back to student folder")
 
+        # Next start remembers the mode.
+        app.switch_mode("staff")
+        app._on_close()
+        self.app = self.gui.App()
+        self.assertEqual(self.app.mode, "staff")
+        self.assertEqual(len(self.app.students), 30)
 
 if __name__ == "__main__":
     unittest.main()
